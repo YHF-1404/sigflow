@@ -30,7 +30,7 @@ OS="$(uname -s)"; ARCH="$(uname -m)"
 KIND=""
 case "$OS" in
     Darwin)
-        [ "$ARCH" = arm64 ] || die "只提供 macOS arm64 包（当前 $ARCH）"
+        [ "$ARCH" = arm64 ] || die "只提供 macOS arm64 包（当前 ${ARCH}）"
         PATTERN='-darwin-arm64\.pkg'; KIND=macos ;;
     Linux)
         DISTRO=""
@@ -44,13 +44,13 @@ case "$OS" in
         fi
         case "$DISTRO" in
             arch)
-                [ "$ARCH" = x86_64 ] || die "Arch 包只提供 x86_64（当前 $ARCH）"
+                [ "$ARCH" = x86_64 ] || die "Arch 包只提供 x86_64（当前 ${ARCH}）"
                 PATTERN='-x86_64\.pkg\.tar\.zst'; KIND=arch ;;
             debian)
                 case "$ARCH" in
                     x86_64)  PATTERN='_amd64\.deb' ;;
                     aarch64) PATTERN='_arm64\.deb' ;;
-                    *) die "Debian 包只提供 amd64/arm64（当前 $ARCH）" ;;
+                    *) die "Debian 包只提供 amd64/arm64（当前 ${ARCH}）" ;;
                 esac
                 KIND=debian ;;
             *) die "未识别的发行版——Android 设备请用 Releases 里的 android tarball（内含 README），其他 Linux 可从源码构建" ;;
@@ -66,10 +66,10 @@ else
 fi
 URL="$(curl -fsSL "$API" \
     | grep '"browser_download_url"' \
-    | grep -E "$PATTERN" \
+    | grep -E -e "$PATTERN" \
     | head -1 \
     | sed 's/.*"\(https:[^"]*\)".*/\1/')"
-[ -n "$URL" ] || die "Release 里没有匹配 $PATTERN 的资产（$API）"
+[ -n "$URL" ] || die "Release 里没有匹配 $PATTERN 的资产（${API}）"
 
 echo "→ $URL"
 [ "$DRY" = 1 ] && exit 0
