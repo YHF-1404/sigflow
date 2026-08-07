@@ -1,0 +1,26 @@
+# sigflow.ui.numeric_display — 数值只读显示（MVP 8 控件之一）。绑 producer
+# 端口时显示 tap 统计量（stat 选哪个）,绑参数时显示参数当前值。纯 manifest 包。
+name = "sigflow.ui.numeric_display"
+version = "0.1.0"
+category = "ui_widget"
+
+[runtime]
+type = "native"
+library = "widget.json"
+entry = "unused"
+
+[widget]
+widget_type = "numeric_display"
+bindable_to = [{ kind = "port" }, { kind = "param" }]
+
+[widget.config_schema.stat]
+type = "enum"
+default = "rms"
+enum_values = ["rms", "peak", "min", "max", "mean"]
+
+[widget.config_schema.decimal_places]
+type = "u32"
+default = 3
+
+[widget.config_schema.label]
+type = "string"

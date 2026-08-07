@@ -1,0 +1,13 @@
+[package]
+name = "sigflow-plugin-counter"
+version = "0.1.0"
+edition = "2021"
+
+# A subprocess (Process runtime) plugin is a binary, not a cdylib. This is
+# the reference / validation plugin for the Rust process SDK.
+[[bin]]
+name = "sigflow-plugin-counter"
+path = "src/main.rs"
+
+[dependencies]
+sigflow-plugin-sdk = { path = "../../../sdk/rust" }

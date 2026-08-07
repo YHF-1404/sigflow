@@ -1,0 +1,123 @@
+name = "sigflow.touch.tracker"
+version = "0.1.0"
+category = "compute"
+# 染色缓冲超时放行不依赖新报文到达,空拍也要跑
+tick_driven = true
+
+[runtime]
+type = "native"
+library = "libsigflow_plugin_touch_tracker.dylib"
+entry = "sigflow_plugin_create"
+
+# Reassembles fixed 64-byte touch reports from a raw byte stream, runs a
+# per-contact state machine, and emits one event at the FIRST `MOVE` of each
+# touch round (DOWN → … → first MOVE). The event payload is a small JSON object
+# `{contact_id,x,y,depth,touch_ts}`; the frame's `t0_ns` carries the host
+# arrival time of the report, used downstream to pair the event with the
+# vibration capture of the same tap.
+[[ports]]
+id = "bytes_in"
+direction = "consumer"
+semantic_type = { kind = "net.tcp_bytes", dtype = "u8" }
+
+# 端口 I：槽位→笔身份指派,JSON {"cid":N,"pen":0|1}（km 匹配结果回注）。
+# 互斥语义：无染色期时首条指派锚定该槽=pen、其余在场/期内新落槽=对侧;
+# 染色期存续中的任何数据直接丢弃（禁翻转）,全部触控生命结束后重新受理。
+[[ports]]
+id = "pen_id"
+direction = "consumer"
+semantic_type = { kind = "touch.pen_assign", dtype = "u8" }
+
+[[ports]]
+id = "touch_event"
+direction = "producer"
+semantic_type = { kind = "touch.first_move_event", clock_domain = "host_monotonic" }
+
+# 染色后的报文流（取代 wb 缓冲职责）：v1 23B(≤2点)/v2 44B(5点) 自适应
+# dst 帧,uinput_sink 直连。队首报文已决即发,未决最多押 dst_timeout_ms。
+[[ports]]
+id = "dst"
+direction = "producer"
+semantic_type = { kind = "touch.dst_result", dtype = "u8" }
+
+# Reassembly resync anchors. 0 = don't check that field (default). Set to the
+# device's report constants to make recovery after a dropped byte frame robust
+# rather than dependent on byte luck.
+[[parameters]]
+id = "report_id"
+param_type = "u32"
+range = { u32_range = { min = 0, max = 255 } }
+default = { u32 = 0 }
+hot_change = false
+label = "Expected report_id (0 = don't check)"
+
+[[parameters]]
+id = "sub_id"
+param_type = "u32"
+range = { u32_range = { min = 0, max = 255 } }
+default = { u32 = 0 }
+hot_change = false
+label = "Expected sub_id (0 = don't check)"
+
+[[parameters]]
+id = "struct_version"
+param_type = "u32"
+range = { u32_range = { min = 0, max = 255 } }
+default = { u32 = 0 }
+hot_change = false
+label = "Expected struct_version (0 = don't check)"
+
+# The raw state byte is converted to a PointState via the firmware's stateful
+# rules (0x04 DOWN_UP is edge-ambiguous); the event is emitted on the first MOVE
+# of each round. settle_moves skips the first N MOVE frames if the very first is
+# still settling.
+[[parameters]]
+id = "settle_moves"
+param_type = "u32"
+range = { u32_range = { min = 0, max = 64 } }
+default = { u32 = 0 }
+label = "MOVE frames to skip before emitting (0 = first MOVE)"
+
+# 持续位置流（ev=move 事件，round 内每 move_every_n 个 MOVE 报文一条）。
+# km 状态匹配的数据源：写小字抬笔高度常不过面板抬笔阈值 → round 永不
+# 重开、没有新 first-MOVE，只有位置流能反映触点实时坐标。250Hz 报文
+# ÷5 ≈ 20ms 节奏。事件 JSON 带 "ev":"first"/"move" 区分。
+[[parameters]]
+id = "emit_moves"
+param_type = "bool"
+default = { bool = false }
+label = "Emit throttled per-contact position updates"
+
+[[parameters]]
+id = "move_every_n"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 50 } }
+default = { u32 = 5 }
+label = "Emit one move update per N MOVE reports"
+
+[[parameters]]
+id = "verbose"
+param_type = "bool"
+default = { bool = false }
+label = "Log every state transition + emit (noisy; debugging)"
+
+[[parameters]]
+id = "dst_timeout_ms"
+param_type = "u32"
+range = { u32_range = { min = 0, max = 2000 } }
+default = { u32 = 100 }
+label = "Max hold before uncolored reports flush (type 0)"
+
+[[parameters]]
+id = "type_id_pen0"
+param_type = "u32"
+range = { u32_range = { min = 0, max = 255 } }
+default = { u32 = 1 }
+label = "type_id for pen 0"
+
+[[parameters]]
+id = "type_id_pen1"
+param_type = "u32"
+range = { u32_range = { min = 0, max = 255 } }
+default = { u32 = 2 }
+label = "type_id for pen 1"

@@ -1,0 +1,138 @@
+name = "sigflow.core.peak_finder"
+version = "0.1.0"
+category = "compute"
+
+[runtime]
+type = "native"
+library = "libsigflow_plugin_peak_finder.so"
+entry = "sigflow_plugin_create"
+
+# 窗口化捕获流（capture 约定：FLAG_DISCONTINUITY 开窗 + sample_index 连续推进；
+# 典型来源 = sdc-usb 的 pen 口或 trigger-capture 的 capture 口）。多通道交织时
+# 用 `channel` 选列；带注解帧自动剥离注解。
+[[ports]]
+id = "capture"
+direction = "consumer"
+semantic_type = { kind = "timeseries.signal", dtype = "f32" }
+
+# 每个完整窗一个事件标记帧（header-only, n_samples=0）：t0_ns = 窗内第一个
+# 峰值的时刻。不设 FLAG_TRIG_INDEXED——sample_index 是本流（如 pen 虚拟轴）
+# 的下标而非配对流样本轴，下游 trigger-capture 走 t0 时间路径对齐。
+[[ports]]
+id = "trigger"
+direction = "producer"
+semantic_type = { kind = "event.trigger", clock_domain = "host_monotonic" }
+
+# 检峰可视化：每个窗口一帧 4 列交织（接 data_monitor → VOFA 逐窗回放）：
+#   col0 = 选中通道信号   col1 = 峰值标记（0 → 检出峰值幅度的阶跃，
+#   跳变沿 = 检出位置；静窗全 0）   col2/3 = DC ± 有效门限（调 threshold 用）
+# 窗过大时抽取到单帧容量内（仅影响显示分辨率）。静窗也发。
+[[ports]]
+id = "view"
+direction = "producer"
+semantic_type = { kind = "timeseries.signal", dtype = "f32", unit = "V", clock_domain = "host_monotonic" }
+
+# 交织帧里峰值检测用的通道列（sdc-usb pen 口：0=笔信号，1=触发标记列）。
+[[parameters]]
+id = "channel"
+param_type = "u32"
+range = { u32_range = { min = 0, max = 63 } }
+default = { u32 = 0 }
+label = "Signal channel"
+
+# 事件锚：peak = 窗内首峰检测（默认）；hw_edge = 直接用上游标记列
+# （末列 0→高电平阶跃 = 硬件触发样本，sdc-usb pen 口自带）的时刻——
+# 完全不依赖波形形状，饱和/无固定峰形（如电荷放大器注入试验）或需要
+# 与硬件过门严格对齐时用。hw_edge 下逐窗必发事件，不做门限判定。
+[[parameters]]
+id = "anchor"
+param_type = "enum"
+range = { enum_variants = ["peak", "hw_edge"] }
+default = { enum = "peak" }
+label = "Event anchor"
+
+# 检峰打分的摆幅方向：abs = |x−DC| 双向（历史默认）；negative / positive =
+# 只对负向/正向摆幅打分。对称波形（如单周期正弦）双向打分时波谷与波峰幅度
+# 平局，argmax 会被噪声随机拨到相反极值——触发时刻半周期跳变（VOFA 上偶发
+# "波峰对标记"）。首摆方向已知时应锁定极性：笔敲击首摆向下 → negative。
+[[parameters]]
+id = "peak_polarity"
+param_type = "enum"
+range = { enum_variants = ["abs", "negative", "positive"] }
+default = { enum = "abs" }
+label = "Peak polarity"
+
+# 与上游窗长一致（收满即检峰；不足被下一窗边界顶掉时丢弃告警）。
+[[parameters]]
+id = "window_samples"
+param_type = "u32"
+range = { u32_range = { min = 16, max = 1000000 } }
+default = { u32 = 2048 }
+unit = "samples"
+label = "Window length"
+
+# 峰值检出的绝对幅度下限（相对 DC，伏特）。实际门限 =
+# max(threshold, sigma_mult × 前导噪声段标准差)。
+[[parameters]]
+id = "threshold"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 100.0 } }
+default = { f64 = 0.05 }
+unit = "V"
+label = "Peak threshold (abs)"
+
+[[parameters]]
+id = "sigma_mult"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 100.0 } }
+default = { f64 = 6.0 }
+label = "Adaptive threshold (σ multiple)"
+
+# 窗首用于估计 DC/噪声的样本数（须小于上游 pretrig 段长度）。
+[[parameters]]
+id = "noise_samples"
+param_type = "u32"
+range = { u32_range = { min = 8, max = 65535 } }
+default = { u32 = 256 }
+unit = "samples"
+label = "Noise estimation window"
+
+# 起振判定需连续过门限的样本数——单样本毛刺点不燃（64k 下 3 样本 ≈ 47µs）。
+[[parameters]]
+id = "onset_run"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 1024 } }
+default = { u32 = 3 }
+unit = "samples"
+label = "Onset run length"
+
+# 首峰 = 起振后此窗内 |x−DC| 的最大点（不是逐样本爬升——上升沿上的高频
+# 抖动微峰会把爬升法提前打断）。窗太长会被后续更大的反弹峰抢走，太短会
+# 停在第一个半周期上；64k 下 128 ≈ 2ms ≈ 敲击首摆。
+[[parameters]]
+id = "peak_search_samples"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 65535 } }
+default = { u32 = 128 }
+unit = "samples"
+label = "Peak search window"
+
+# 峰值下标→时刻换算的采样率先验；一旦能从帧头 (Δt0, Δsample_index) 推断出
+# 实际速率（sdc-usb pen 虚拟轴跨窗即可推）就用推断值。
+[[parameters]]
+id = "fs_hz"
+param_type = "f64"
+range = { f64_range = { min = 100.0, max = 10000000.0 } }
+default = { f64 = 64000.0 }
+unit = "Hz"
+label = "Sample rate prior"
+
+[[parameters]]
+id = "verbose"
+param_type = "bool"
+default = { bool = false }
+label = "Verbose logging"
+
+[[actions]]
+id = "reset"
+label = "Reset stream state"

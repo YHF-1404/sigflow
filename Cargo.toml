@@ -1,0 +1,29 @@
+# Standalone workspace for the public sigflow surface: the shared type/
+# contract crates, the plugin SDKs, and the generic plugins. This directory
+# is self-contained — no path dependency escapes it — so it builds as-is
+# when published/cloned on its own, independent of the core workspace at
+# the repository root.
+[workspace]
+resolver = "2"
+members = [
+    "crates/sigflow-types",
+    "crates/sigflow-catalog",
+    "sdk/rust",
+    "plugins/native/passthrough",
+    "plugins/native/sine-generator",
+    "plugins/native/data-monitor",
+    "plugins/native/storage",
+    "plugins/native/replay-source",
+    "plugins/native/tcp-source",
+    "plugins/native/trigger-source",
+    "plugins/native/trigger-capture",
+    "plugins/native/peak-finder",
+    "plugins/native/pair-gate",
+    "plugins/native/time-coalesce",
+    "plugins/native/channel-select",
+    "plugins/native/window-filtfilt",
+    "plugins/native/touch-tracker",
+    "plugins/native/capture-touch-merge",
+    "plugins/process/rust-counter",
+    "plugins/process/usb-adc",
+]

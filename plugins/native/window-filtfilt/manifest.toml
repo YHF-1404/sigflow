@@ -1,0 +1,74 @@
+name = "sigflow.dsp.window_filtfilt"
+version = "0.1.0"
+category = "compute"
+
+# 通用窗口零相位滤波器（Butterworth + filtfilt）。刻意叫 window_filtfilt
+# 而不是 filter：零相位滤波非因果，只能作用于完整窗口——本节点消费
+# windowed capture 约定的流（FLAG_DISCONTINUITY 开窗、chunk 连续），重组
+# 出整窗后逐列滤波，每窗发一帧。连续流的因果滤波器是另一个（未来的）节点。
+#
+# 窗口完成判定优先用 capture-window 注解（capture 约定：首 chunk 带
+# {"window_rows":N,"trig_row":K}）——无需重复配置窗长；注解缺失时退化为
+# "下一窗边界冲洗"（多一窗延迟，照常工作）。随帧注解原样透传到整窗输出。
+#
+# 采样率无参数：带内宣告（capture-window 注解 fs）> 帧头推断
+# （Δsample_index/Δt0）；两者皆缺的首窗跳过。
+[runtime]
+type = "native"
+library = "libsigflow_plugin_window_filtfilt.dylib"
+entry = "sigflow_plugin_create"
+
+# 多通道交织 f32 windowed 流（列数逐帧自描述）。
+[[ports]]
+id = "signal_in"
+direction = "consumer"
+semantic_type = { kind = "timeseries.signal", dtype = "f32" }
+
+# 滤波后的整窗：f64 交织，列数/行数与输入窗一致，每窗一帧
+# （FLAG_DISCONTINUITY 开窗，注解透传）。f64 = 滤波内部精度直出，
+# 下游数值链路不掺入 f32 量化。
+[[ports]]
+id = "filtered"
+direction = "producer"
+semantic_type = { kind = "timeseries.signal", dtype = "f64" }
+
+[[parameters]]
+id = "btype"
+param_type = "enum"
+range = { enum_variants = ["highpass", "lowpass"] }
+default = { enum = "highpass" }
+label = "Filter type"
+
+[[parameters]]
+id = "order"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 8 } }
+default = { u32 = 4 }
+label = "Butterworth order"
+
+[[parameters]]
+id = "fc_hz"
+param_type = "f64"
+range = { f64_range = { min = 0.01, max = 10000000.0 } }
+default = { f64 = 100.0 }
+unit = "Hz"
+label = "Cutoff frequency"
+
+# 滤波前从所有列减去的直流偏置（中轨等）。
+[[parameters]]
+id = "dc_offset"
+param_type = "f64"
+range = { f64_range = { min = -100.0, max = 100.0 } }
+default = { f64 = 0.0 }
+unit = "V"
+label = "DC offset (subtracted before filtering)"
+
+[[parameters]]
+id = "verbose"
+param_type = "bool"
+default = { bool = false }
+label = "Log every window"
+
+[[actions]]
+id = "reset"
+label = "Reset reassembly state"

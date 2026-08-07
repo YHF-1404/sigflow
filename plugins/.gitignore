@@ -1,0 +1,3 @@
+# Plugin build artifacts staged by `build.sh` for `sigflow plugin install`.
+native/*/pkg/
+process/*/pkg/

@@ -1,0 +1,91 @@
+name = "sigflow.io.usb_adc"
+version = "0.1.0"
+category = "compute"
+
+[runtime]
+type = "process"
+command = "sigflow-plugin-usb-adc"
+script = ""
+
+# Single multichannel interleaved output. channels / sample_rate_hz are left
+# unset here and resolved at start() from the device config (channel_mask +
+# sample_rate), which are hot_change=false so they are constant per run.
+[[ports]]
+id = "adc_out"
+direction = "producer"
+semantic_type = { kind = "timeseries.signal", dtype = "f32", unit = "V", clock_domain = "host_monotonic" }
+
+# Pen IO-trigger markers. Two pens are wired to device GPIO PB4/PB5; the firmware
+# latches the current sample index at each trigger edge (acquisition clock
+# domain). This plugin drains those events and emits a header-only marker per pen
+# whose t0_ns uses the SAME stream anchor + recovered rate as adc_out, so the
+# marker lands on the corresponding ADC sample with no cross-domain conversion.
+# Feed each into a trigger-capture node's `trigger` input.
+[[ports]]
+id = "trigger_pen0"
+direction = "producer"
+semantic_type = { kind = "event.trigger", clock_domain = "host_monotonic" }
+
+[[ports]]
+id = "trigger_pen1"
+direction = "producer"
+semantic_type = { kind = "event.trigger", clock_domain = "host_monotonic" }
+
+# --- Device parameters (sent to the firmware via SET_ADC_CONFIG). Ranges are
+#     the static per-hardware-model capability; the plugin also validates the
+#     connected device's GET_CAPABILITY against them. hot_change=false: changing
+#     these requires the node to be stopped (and the channel count changes the
+#     output frame geometry). ---
+
+# Read-only: in ISO mode this firmware free-runs at a fixed device rate and
+# ignores the rate field of SET_ADC_CONFIG (verified on hardware — configuring
+# 16000 left the device at 64000). The plugin reads the actual rate back from
+# the capability at start() and anchors frame t0 to it. Shown for display only;
+# the shell rejects external writes.
+[[parameters]]
+id = "sample_rate"
+param_type = "u32"
+range = { u32_range = { min = 1000, max = 192000 } }
+default = { u32 = 16000 }
+hot_change = false
+editable = false
+editable_reason = "ISO mode: the sample rate is fixed by the device firmware"
+unit = "Hz"
+label = "Sample rate"
+
+[[parameters]]
+id = "channel_mask"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 65535 } }
+default = { u32 = 31 }
+hot_change = false
+label = "Channel mask (bitfield)"
+
+[[parameters]]
+id = "samplebits"
+param_type = "u32"
+range = { u32_range = { min = 8, max = 32 } }
+default = { u32 = 12 }
+hot_change = false
+unit = "bit"
+label = "Sample bit depth"
+
+# --- Host parameter: ADC reference voltage used for raw→voltage conversion.
+#     Host-side only (never sent to the device). ---
+[[parameters]]
+id = "vref"
+param_type = "f64"
+range = { f64_range = { min = 0.1, max = 10.0 } }
+default = { f64 = 3.3 }
+unit = "V"
+label = "Reference voltage"
+
+# --- Host parameter: reset the USB port on open to clear stale DWC2 ISO
+#     endpoint state (iso_parity). Default true; firmware that doesn't need it
+#     can set false. ---
+[[parameters]]
+id = "reset_on_open"
+param_type = "bool"
+default = { bool = true }
+hot_change = false
+label = "Reset device on open"

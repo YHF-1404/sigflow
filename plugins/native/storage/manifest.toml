@@ -1,0 +1,122 @@
+name = "sigflow.io.storage"
+version = "0.1.0"
+category = "compute"
+
+[runtime]
+type = "native"
+library = "libsigflow_plugin_storage.dylib"
+entry = "sigflow_plugin_create"
+
+# A sink node: records the incoming signal into the catalog data root. Each
+# capture window arrives as a contiguous burst whose first frame carries
+# FLAG_DISCONTINUITY; the plugin writes one record per capture under
+# records/<shard>/<ulid>/ — waveform.npy (shape (n_samples, channels), f32)
+# plus record.json (the manifest of truth: provenance, intrinsic metadata,
+# artifact hashes). A continuous stream (no discontinuities) is recorded into
+# rolling records capped at `max_samples`.
+
+[[ports]]
+id = "signal"
+direction = "consumer"
+semantic_type = { kind = "timeseries.signal", dtype = "f32" }
+
+# Master on/off for recording.
+[[parameters]]
+id = "enabled"
+param_type = "bool"
+default = { bool = true }
+label = "Enable recording"
+
+# Catalog data root: records/, annotations/, _index/ etc. all live under it.
+# Relative paths resolve against the shell process's working directory; an
+# absolute path is recommended. The default is EMPTY on purpose: an empty
+# value never overrides anything (the plugin falls back to "captures"
+# internally), so replaying the whole param store in arbitrary order cannot
+# race the deprecated `output_dir` alias against this default.
+[[parameters]]
+id = "data_root"
+param_type = "string"
+default = { string = "" }
+label = "Data root"
+
+# Stream label stamped into each record's provenance — the natural place to
+# record WHICH source this node records (e.g. "pen0" / "pen1"), since one
+# storage node sits per capture node. Successor of the legacy `prefix`
+# (filenames are ULIDs now and carry no information).
+# Empty default for the same push-order reason as data_root (the plugin
+# falls back to "capture" internally).
+[[parameters]]
+id = "stream_label"
+param_type = "string"
+default = { string = "" }
+label = "Stream label"
+
+# This node's id in the graph (e.g. "rec0"), stamped into provenance.node_id.
+# Session sink-attrs (e.g. rec0 → pen=A) resolve against it, so set it to the
+# actual node name. Empty = unknown.
+[[parameters]]
+id = "node_id"
+param_type = "string"
+default = { string = "" }
+label = "Node id (provenance)"
+
+# Graph name this sink runs in, stamped into provenance.graph and checked
+# against the active session's declared graph: a session begun for another
+# topology degrades to session_id=null (a wrong attribution is invisible,
+# null is repairable). Empty = no check.
+[[parameters]]
+id = "graph"
+param_type = "string"
+default = { string = "" }
+label = "Graph name (session check)"
+
+# How many TRAILING channels are trigger markers rather than signal (the
+# upstream trigger-capture appends one low→high marker channel when its
+# `trigger_channel` param is on — which is its default). Recorded into the
+# manifest's channel roles so replay can strip them; 0 = all channels signal.
+[[parameters]]
+id = "trig_channels"
+param_type = "u32"
+range = { u32_range = { min = 0, max = 16 } }
+default = { u32 = 0 }
+label = "Trailing trigger-marker channels"
+
+# DEPRECATED alias of `data_root` (kept for the migration window; sets it
+# with a warning).
+[[parameters]]
+id = "output_dir"
+param_type = "string"
+default = { string = "" }
+label = "(deprecated) → data_root"
+
+# DEPRECATED alias of `stream_label` (kept for the migration window; sets it
+# with a warning).
+[[parameters]]
+id = "prefix"
+param_type = "string"
+default = { string = "" }
+label = "(deprecated) → stream_label"
+
+# Channel count for the stored array; 0 = auto-derive from the frame header
+# (bytes / (n_samples * 4)).
+[[parameters]]
+id = "channels"
+param_type = "u32"
+range = { u32_range = { min = 0, max = 4096 } }
+default = { u32 = 0 }
+label = "Channels (0 = auto)"
+
+# Safety cap on samples-per-file. A continuous stream has no discontinuity to
+# segment on, so without this the in-memory buffer would grow without bound;
+# exceeding it forces a flush to a new file. The trigger-capture path flushes
+# per window and never reaches this.
+# Upper bound deliberately modest: the whole segment is buffered in memory
+# and commit briefly holds a second copy (npy assembly), so the peak is
+# ~2 × max_samples × channels × 4 B.
+[[parameters]]
+id = "max_samples"
+param_type = "u32"
+range = { u32_range = { min = 1024, max = 16777216 } }
+default = { u32 = 1048576 }
+unit = "samples"
+label = "Max samples per record"

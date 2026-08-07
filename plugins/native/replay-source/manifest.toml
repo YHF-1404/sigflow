@@ -1,0 +1,71 @@
+name = "sigflow.io.replay_source"
+version = "0.1.0"
+category = "compute"
+
+[runtime]
+type = "native"
+library = "libsigflow_plugin_replay_source.dylib"
+entry = "sigflow_plugin_create"
+
+# A source node (no input ports): the dual of the storage sink. It loads a
+# list of catalog records by ULID and replays their waveforms out the output
+# port, re-anchoring time to the local monotonic clock and stripping the
+# trigger-marker channels (so a downstream sink/monitor sees clean signal).
+# The original t0/fs/sample_index/ULID ride along in a per-record annotation
+# (replay=true). The query engine stays in the CLI: this node only consumes a
+# ULID list (e.g. `sigflow-cli data ls --json … | jq -r '.[].id'`).
+
+[[ports]]
+id = "signal_out"
+direction = "producer"
+# Re-anchored to the host monotonic clock, like any software source.
+semantic_type = { kind = "timeseries.signal", dtype = "f32", clock_domain = "host_monotonic" }
+
+# Catalog data root the records live under (records/<shard>/<ulid>/…). Empty
+# falls back to "captures" (mirrors the storage sink's empty-default idiom so
+# replaying the param store in arbitrary order never races a default in).
+[[parameters]]
+id = "data_root"
+param_type = "string"
+default = { string = "" }
+label = "Data root"
+
+# The records to replay, in order. Whitespace/comma/newline separated ULIDs.
+# Sourced from the CLI query engine, e.g.
+#   sigflow-cli data ls stream_label=pen0 --json | jq -r '.[].id'
+[[parameters]]
+id = "ulid_list"
+param_type = "string"
+default = { string = "" }
+label = "ULIDs to replay"
+
+# Re-anchor each frame's t0 to the local monotonic clock (the default and the
+# ratified behaviour — the original capture-machine monotonic t0 is meaningless
+# on another host). When false, emits the original absolute t0 (strict replay).
+# hot_change=false: flipping it mid-run would jump t0.
+[[parameters]]
+id = "re_anchor"
+param_type = "bool"
+default = { bool = true }
+hot_change = false
+label = "Re-anchor t0 to local monotonic clock"
+
+# Samples per emitted frame (caps real-time catch-up per tick). The output
+# buffer also caps this; whichever is smaller wins.
+[[parameters]]
+id = "batch_size"
+param_type = "u32"
+range = { u32_range = { min = 64, max = 65536 } }
+default = { u32 = 4096 }
+hot_change = false
+unit = "samples"
+label = "Samples per frame"
+
+# Replay the list forever (re-anchoring on each wrap) instead of going idle
+# when the list is exhausted.
+[[parameters]]
+id = "loop_replay"
+param_type = "bool"
+default = { bool = false }
+hot_change = false
+label = "Loop the list forever"

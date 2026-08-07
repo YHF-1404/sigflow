@@ -1,0 +1,49 @@
+name = "sigflow.core.time_coalesce"
+version = "0.1.0"
+category = "compute"
+# 有辅助时序缓冲的事件节点：无输入帧也要跑定时发射检查
+tick_driven = true
+
+[runtime]
+type = "native"
+library = "libsigflow_plugin_time_coalesce.dylib"
+entry = "sigflow_plugin_create"
+
+# 通用时间合帧：近邻事件帧合并为一帧（领头帧会话窗——帧能装进某开放组
+# 的窗口(t0−leader_t0<window_ms)即入组，否则开新组；组在领头帧**到达**后
+# group_wait_ms（墙钟）发射；组内按 t0 排序，载荷以 '\n' 拼接（JSON 事件
+# 帧 → JSON Lines），t0/seq 取领头帧。绝大多数场景单帧进出，仅增加
+# group_wait 的固定延迟。双笔同落消歧的前置件。
+[[ports]]
+id = "in"
+direction = "consumer"
+semantic_type = { kind = "event.any" }
+
+[[ports]]
+id = "out"
+direction = "producer"
+semantic_type = { kind = "event.group" }
+
+# 成员归属窗（t0 轴）：与领头帧 t0 差在窗内的帧并入同组。
+[[parameters]]
+id = "window_ms"
+param_type = "f64"
+range = { f64_range = { min = 1.0, max = 5000.0 } }
+default = { f64 = 30.0 }
+label = "Coalesce window"
+unit = "ms"
+
+# 发射等待（墙钟，自领头帧到达起；应 ≥ window_ms）。
+[[parameters]]
+id = "group_wait_ms"
+param_type = "f64"
+range = { f64_range = { min = 1.0, max = 10000.0 } }
+default = { f64 = 50.0 }
+label = "Group wait timeout"
+unit = "ms"
+
+[[parameters]]
+id = "verbose"
+param_type = "bool"
+default = { bool = false }
+label = "Verbose logging"

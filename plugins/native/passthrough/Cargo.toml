@@ -1,0 +1,18 @@
+[package]
+name = "sigflow-plugin-passthrough"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# In-workspace path deps (the public workspace is self-contained).
+# Out-of-tree plugin projects declare these as git dependencies on the
+# public sigflow repo instead.
+sigflow-types = { path = "../../../crates/sigflow-types" }
+sigflow-plugin-sdk = { path = "../../../sdk/rust" }
+
+[dev-dependencies]
+serde_json = "1"
+toml = "0.8"

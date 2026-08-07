@@ -1,0 +1,20 @@
+[package]
+name = "sigflow-plugin-window-filtfilt"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+sigflow-plugin-sdk = { path = "../../../sdk/rust" }
+# butter 设计的复数极点运算（纯 Rust，bionic 零障碍）
+num-complex = "0.4"
+
+[dev-dependencies]
+toml = "0.8"
+serde_json = "1"
+
+[features]
+default = ["abi"]
+abi = []

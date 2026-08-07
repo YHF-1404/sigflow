@@ -1,0 +1,32 @@
+name = "sigflow.io.trigger_source"
+version = "0.1.0"
+category = "compute"
+
+[runtime]
+type = "native"
+library = "libsigflow_plugin_trigger_source.dylib"
+entry = "sigflow_plugin_create"
+
+# A software trigger source: emits event markers whose t0_ns is the host
+# monotonic time of the event (the `fire` action's invocation instant, or each
+# period_ms tick). A marker is a header-only frame (no samples). Feeds the
+# trigger-capture plugin's `trigger` input to validate the capture chain without
+# real trigger hardware. Same clock domain (host_monotonic) as the PLL-corrected
+# ADC stream, so no cross-domain conversion is needed.
+[[ports]]
+id = "trigger"
+direction = "producer"
+semantic_type = { kind = "event.trigger", clock_domain = "host_monotonic" }
+
+# Auto-fire period in milliseconds; 0 = manual only (fire via the action).
+[[parameters]]
+id = "period_ms"
+param_type = "u32"
+range = { u32_range = { min = 0, max = 3600000 } }
+default = { u32 = 0 }
+unit = "ms"
+label = "Auto-fire period (0 = manual)"
+
+[[actions]]
+id = "fire"
+label = "Fire a trigger now"

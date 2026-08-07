@@ -1,0 +1,16 @@
+[package]
+name = "sigflow-plugin-trigger-source"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# In-tree path dep (like the other in-tree dev plugins); the SDK re-exports the
+# types this plugin needs, including mono_ns for the host-clock event stamp.
+sigflow-plugin-sdk = { path = "../../../sdk/rust" }
+
+[dev-dependencies]
+serde_json = "1"
+toml = "0.8"

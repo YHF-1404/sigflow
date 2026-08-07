@@ -1,0 +1,21 @@
+# sigflow.ui.button — 动作按钮（MVP 8 控件之一）。绑插件 manifest 声明的
+# action,点击 = invoke_action。confirm=true 时点击先弹确认。纯 manifest 包。
+name = "sigflow.ui.button"
+version = "0.1.0"
+category = "ui_widget"
+
+[runtime]
+type = "native"
+library = "widget.json"
+entry = "unused"
+
+[widget]
+widget_type = "button"
+bindable_to = [{ kind = "action" }]
+
+[widget.config_schema.label]
+type = "string"
+
+[widget.config_schema.confirm]
+type = "bool"
+default = false

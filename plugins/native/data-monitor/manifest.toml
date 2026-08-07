@@ -1,0 +1,46 @@
+name = "sigflow.core.data_monitor"
+version = "0.1.0"
+category = "compute"
+
+[runtime]
+type = "native"
+library = "libsigflow_plugin_data_monitor.dylib"
+entry = "sigflow_plugin_create"
+
+[[ports]]
+id = "signal_in"
+direction = "consumer"
+semantic_type = { kind = "timeseries.signal", dtype = "f32" }
+
+[[parameters]]
+id = "enabled"
+param_type = "bool"
+default = { bool = true }
+label = "Enable monitoring"
+
+# --- VOFA+ live waveform streaming (UDP, JustFloat protocol) ---
+# Set vofa_enabled=true and point vofa_addr at a VOFA+ instance configured for
+# UDP/JustFloat; this node then sends each input frame's samples as JustFloat
+# rows. channels=0 auto-derives the channel count from the frame header.
+[[parameters]]
+id = "vofa_enabled"
+param_type = "bool"
+default = { bool = false }
+label = "Stream to VOFA+ (UDP JustFloat)"
+
+[[parameters]]
+id = "vofa_addr"
+param_type = "string"
+default = { string = "127.0.0.1:1347" }
+label = "VOFA+ UDP target (host:port)"
+
+[[parameters]]
+id = "channels"
+param_type = "u32"
+range = { u32_range = { min = 0, max = 256 } }
+default = { u32 = 0 }
+label = "Channels (0 = auto from frame)"
+
+[[actions]]
+id = "reset_stats"
+label = "Reset statistics"

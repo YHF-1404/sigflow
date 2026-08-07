@@ -1,0 +1,62 @@
+name = "sigflow.touch.capture_merge"
+version = "0.1.0"
+category = "compute"
+
+[runtime]
+type = "native"
+library = "libsigflow_plugin_capture_touch_merge.dylib"
+entry = "sigflow_plugin_create"
+
+# Pairs each vibration capture with the touch coordinate of the same tap and
+# attaches it as a frame annotation, so a dumb sink (storage) can persist both
+# together. This is the explicit alignment node: it owns the fuzzy time-proximity
+# pairing (the capture is the anchor; recent touch events are buffered in a
+# small ring) and leaves the sample stream untouched. Capture flows through
+# unchanged except for the trailing annotation; storage segments on the
+# capture's own discontinuity flag exactly as before.
+[[ports]]
+id = "capture"
+direction = "consumer"
+semantic_type = { kind = "timeseries.signal", dtype = "f32" }
+
+[[ports]]
+id = "touch_event"
+direction = "consumer"
+semantic_type = { kind = "touch.first_move_event" }
+
+[[ports]]
+id = "out"
+direction = "producer"
+semantic_type = { kind = "timeseries.signal", dtype = "f32", clock_domain = "host_monotonic" }
+
+[[parameters]]
+id = "window_ms"
+param_type = "f64"
+range = { f64_range = { min = 1.0, max = 1000.0 } }
+default = { f64 = 100.0 }
+unit = "ms"
+label = "Pairing window (± ms around capture t0)"
+
+# Captures reach this node ~20-50ms before the matching touch event; hold each
+# capture this long before releasing+pairing so the touch is in the ring.
+[[parameters]]
+id = "pair_delay_ms"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 2000.0 } }
+default = { f64 = 80.0 }
+unit = "ms"
+label = "Hold captures this long before pairing"
+
+# 按帧 t0 配对（而非捕获到达时刻）。两侧 t0 同锚 host 单调钟的拓扑
+# （如 SDC 链）应开启：到达时刻含捕获链迟到抖动，密集敲击会错配邻敲。
+[[parameters]]
+id = "match_by_t0"
+param_type = "bool"
+default = { bool = false }
+label = "Pair by frame t0 (same-clock topologies)"
+
+[[parameters]]
+id = "verbose"
+param_type = "bool"
+default = { bool = false }
+label = "Log every rx/flush detail (noisy; debugging)"

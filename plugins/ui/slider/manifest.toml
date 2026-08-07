@@ -1,0 +1,33 @@
+# sigflow.ui.slider — 数值参数滑块（MVP 8 控件之一）。
+# 纯 manifest 包：壳体只读声明做绑定校验，前端负责渲染；[runtime] 是
+# schema 必填项，widget.json 只是占位内容，永远不会被加载。
+name = "sigflow.ui.slider"
+version = "0.1.0"
+category = "ui_widget"
+
+[runtime]
+type = "native"
+library = "widget.json"
+entry = "unused"
+
+[widget]
+widget_type = "slider"
+bindable_to = [
+  { kind = "param", data_type = "f64" },
+  { kind = "param", data_type = "f32" },
+  { kind = "param", data_type = "u32" },
+  { kind = "param", data_type = "i32" },
+]
+
+[widget.config_schema.orientation]
+type = "enum"
+default = "horizontal"
+enum_values = ["horizontal", "vertical"]
+
+[widget.config_schema.scale]
+type = "enum"
+default = "linear"
+enum_values = ["linear", "logarithmic"]
+
+[widget.config_schema.label]
+type = "string"

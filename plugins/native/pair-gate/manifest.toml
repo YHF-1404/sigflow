@@ -1,0 +1,98 @@
+name = "sigflow.core.pair_gate"
+version = "0.1.0"
+category = "compute"
+
+[runtime]
+type = "native"
+library = "libsigflow_plugin_pair_gate.dylib"
+entry = "sigflow_plugin_create"
+
+# 通用 N 通道时间会合门（rendezvous gate）：前 channels 个输入口各自扣帧，
+# 当每个通道都有一帧与锚帧（最早到达者）|t0 差| ≤ window_ms 时，整组从
+# 对应输出口**原样**同 tick 成对放行；某帧从到达起等满 timeout_ms 仍凑不齐
+# 一组则告警丢弃、不输出。配对判据是帧内时间 t0（语义正确性），到达超时
+# 只是放弃机制（流动性）——两者正交，都可配。
+#
+# 端口静态申报 in_0..in_3 / out_0..out_3，实际参与配对的是前 `channels`
+# 个（壳体不告知连线状态，通道数必须显式声明）；channels 之外的口即使
+# 来数据也忽略。典型用法：触控坐标 × 触发捕获窗 × 检峰可视化窗，三全
+# 才放行落盘（完整性门）。
+#
+# 注意：本节点按输入门控 tick——超时丢弃发生在超时后的下一个输入 tick
+# 上（"至少 t"语义，非精确定时器）；每 tick 每口只放行一组，积压的组
+# 在后续 tick 依次流出。
+[[ports]]
+id = "in_0"
+direction = "consumer"
+semantic_type = { kind = "any" }
+
+[[ports]]
+id = "in_1"
+direction = "consumer"
+semantic_type = { kind = "any" }
+
+[[ports]]
+id = "in_2"
+direction = "consumer"
+semantic_type = { kind = "any" }
+
+[[ports]]
+id = "in_3"
+direction = "consumer"
+semantic_type = { kind = "any" }
+
+[[ports]]
+id = "out_0"
+direction = "producer"
+semantic_type = { kind = "any" }
+
+[[ports]]
+id = "out_1"
+direction = "producer"
+semantic_type = { kind = "any" }
+
+[[ports]]
+id = "out_2"
+direction = "producer"
+semantic_type = { kind = "any" }
+
+[[ports]]
+id = "out_3"
+direction = "producer"
+semantic_type = { kind = "any" }
+
+# 参与配对的通道数（in_0..in_{channels-1}）。改动会清空所有扣押帧。
+[[parameters]]
+id = "channels"
+param_type = "u32"
+range = { u32_range = { min = 2, max = 4 } }
+default = { u32 = 2 }
+label = "Active channels"
+
+# 配对窗口：|t0_i − t0_锚| ≤ window 才算同一事件。
+[[parameters]]
+id = "window_ms"
+param_type = "f64"
+range = { f64_range = { min = 0.1, max = 10000.0 } }
+default = { f64 = 100.0 }
+unit = "ms"
+label = "Pairing window (|t0_i - t0_anchor|)"
+
+# 单帧最长等待：从帧到达本节点起，等满仍凑不齐组 → 告警丢弃。
+[[parameters]]
+id = "timeout_ms"
+param_type = "f64"
+range = { f64_range = { min = 1.0, max = 60000.0 } }
+default = { f64 = 500.0 }
+unit = "ms"
+label = "Group wait timeout (from arrival)"
+
+[[parameters]]
+id = "verbose"
+param_type = "bool"
+default = { bool = false }
+label = "Log every group/hold detail"
+
+[[actions]]
+id = "reset"
+label = "Drop all held frames"

@@ -1,0 +1,50 @@
+name = "sigflow.core.sine_generator"
+version = "0.1.0"
+category = "compute"
+
+[runtime]
+type = "native"
+library = "libsigflow_plugin_sine_generator.dylib"
+entry = "sigflow_plugin_create"
+
+[[ports]]
+id = "signal_out"
+direction = "producer"
+semantic_type = { kind = "timeseries.signal", dtype = "f32", clock_domain = "host_monotonic" }
+
+[[parameters]]
+id = "frequency_hz"
+param_type = "f64"
+range = { f64_range = { min = 1.0, max = 20000.0 } }
+default = { f64 = 440.0 }
+unit = "Hz"
+label = "Frequency"
+
+[[parameters]]
+id = "amplitude"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 1.0 } }
+default = { f64 = 0.5 }
+label = "Amplitude"
+
+[[parameters]]
+id = "sample_rate_hz"
+param_type = "f64"
+range = { f64_range = { min = 1000.0, max = 192000.0 } }
+default = { f64 = 48000.0 }
+hot_change = false
+unit = "Hz"
+label = "Sample rate"
+
+[[parameters]]
+id = "batch_size"
+param_type = "u32"
+range = { u32_range = { min = 64, max = 4096 } }
+default = { u32 = 1024 }
+hot_change = false
+unit = "samples"
+label = "Batch size"
+
+[[actions]]
+id = "reset_phase"
+label = "Reset phase accumulator"

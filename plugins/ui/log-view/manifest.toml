@@ -1,0 +1,47 @@
+# sigflow.ui.log_view — 节点日志查看器。绑 `logs`（整节点，无 target），
+# 数据源是该节点的 node.log —— 壳体 tracing 输出 + 插件 stdout/stderr 的并集，
+# 经 get_logs 按字节偏移分页读取（历史即文件本身，滚轮上翻就是往前读）。
+#
+# 两类行区别对待：tracing 行带 INFO/WARN/ERROR，受 level 阈值管；插件的
+# eprintln 行没有等级，归 `plugin` 档、由 show_plugin 单独开关——把阈值调到
+# WARN 找报错时不该顺手把插件正文也滤掉。纯 manifest 包。
+name = "sigflow.ui.log_view"
+version = "0.1.0"
+category = "ui_widget"
+
+[runtime]
+type = "native"
+library = "widget.json"
+entry = "unused"
+
+[widget]
+widget_type = "log_view"
+bindable_to = [{ kind = "logs" }]
+
+# 最低显示等级（只管 tracing 行）。
+[widget.config_schema.level]
+type = "enum"
+enum_values = ["trace", "debug", "info", "warn", "error"]
+default = "info"
+
+# 插件行（无等级）是否显示。默认开——它通常才是要读的正文。
+[widget.config_schema.show_plugin]
+type = "bool"
+default = true
+
+# 子串过滤，空=不过滤。大小写不敏感。
+[widget.config_schema.filter]
+type = "string"
+
+# 客户端保留的行数上限（滚轮上翻时向前扩，超出从头部丢）。
+[widget.config_schema.max_lines]
+type = "u32"
+default = 2000
+
+# 跟随刷新率（Hz）。滚上去看历史时自动暂停跟随。
+[widget.config_schema.refresh_hz]
+type = "f64"
+default = 2.0
+
+[widget.config_schema.label]
+type = "string"

@@ -1,0 +1,15 @@
+[package]
+name = "sigflow-plugin-sdk"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Depends on the in-workspace `sigflow-types`. Out-of-tree plugin
+# projects don't use this path — they declare sigflow-plugin-sdk as a
+# git dependency on the public sigflow repo.
+sigflow-types = { path = "../../crates/sigflow-types" }
+serde_json = "1"
+# Used by the `process` module (subprocess runtime entry point) to mmap the
+# shared-memory data buffers and parse the embedded manifest.
+memmap2 = "0.9"
+toml = "0.8"

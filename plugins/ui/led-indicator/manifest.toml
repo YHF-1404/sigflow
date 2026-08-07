@@ -1,0 +1,25 @@
+# sigflow.ui.led_indicator — 节点状态指示灯（MVP 8 控件之一）。绑节点状态
+# （target 为空）,渲染器按 running/stopped 上色。纯 manifest 包。
+name = "sigflow.ui.led_indicator"
+version = "0.1.0"
+category = "ui_widget"
+
+[runtime]
+type = "native"
+library = "widget.json"
+entry = "unused"
+
+[widget]
+widget_type = "led_indicator"
+bindable_to = [{ kind = "state" }]
+
+[widget.config_schema.label]
+type = "string"
+
+[widget.config_schema.color_running]
+type = "string"
+default = "#22c55e"
+
+[widget.config_schema.color_stopped]
+type = "string"
+default = "#64748b"

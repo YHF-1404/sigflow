@@ -1,0 +1,21 @@
+# sigflow.ui.toggle — bool 参数开关（MVP 8 控件之一）。纯 manifest 包。
+name = "sigflow.ui.toggle"
+version = "0.1.0"
+category = "ui_widget"
+
+[runtime]
+type = "native"
+library = "widget.json"
+entry = "unused"
+
+[widget]
+widget_type = "toggle"
+bindable_to = [{ kind = "param", data_type = "bool" }]
+
+[widget.config_schema.style]
+type = "enum"
+default = "switch"
+enum_values = ["switch", "checkbox"]
+
+[widget.config_schema.label]
+type = "string"

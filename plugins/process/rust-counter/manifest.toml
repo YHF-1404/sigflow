@@ -1,0 +1,28 @@
+name = "sigflow.test.counter"
+version = "0.1.0"
+category = "compute"
+
+[runtime]
+type = "process"
+command = "sigflow-plugin-counter"
+script = ""
+
+[[ports]]
+id = "out"
+direction = "producer"
+semantic_type = { kind = "timeseries.counter", dtype = "u32" }
+
+[[parameters]]
+id = "batch_size"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 1024 } }
+default = { u32 = 8 }
+unit = "samples"
+label = "Batch size"
+
+[[parameters]]
+id = "fault_after"
+param_type = "u32"
+range = { u32_range = { min = 0, max = 1000000 } }
+default = { u32 = 0 }
+label = "Fault after N ticks (0 = never; test hook)"

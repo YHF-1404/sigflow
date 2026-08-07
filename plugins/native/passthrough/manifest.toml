@@ -1,0 +1,35 @@
+name = "sigflow.core.passthrough"
+version = "0.1.0"
+category = "compute"
+
+[runtime]
+type = "native"
+library = "libsigflow_plugin_passthrough.dylib"
+entry = "sigflow_plugin_create"
+
+[[ports]]
+id = "in"
+direction = "consumer"
+semantic_type = { kind = "any" }
+
+[[ports]]
+id = "out"
+direction = "producer"
+semantic_type = { kind = "any" }
+
+[[parameters]]
+id = "enabled"
+param_type = "bool"
+default = { bool = true }
+label = "Enable passthrough"
+
+[[parameters]]
+id = "gain"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 10.0 } }
+default = { f64 = 1.0 }
+label = "Gain"
+
+[[actions]]
+id = "reset"
+label = "Reset counters"

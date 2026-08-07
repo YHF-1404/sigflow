@@ -1,0 +1,17 @@
+# sigflow.ui.dropdown — enum 参数下拉框（MVP 8 控件之一）。选项来自被绑参数
+# 描述符的 enum variants，控件自身不声明数据约束。纯 manifest 包。
+name = "sigflow.ui.dropdown"
+version = "0.1.0"
+category = "ui_widget"
+
+[runtime]
+type = "native"
+library = "widget.json"
+entry = "unused"
+
+[widget]
+widget_type = "dropdown"
+bindable_to = [{ kind = "param", data_type = "enum" }]
+
+[widget.config_schema.label]
+type = "string"

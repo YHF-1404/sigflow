@@ -1,0 +1,110 @@
+name = "sigflow.io.trigger_capture"
+version = "0.1.0"
+category = "compute"
+
+[runtime]
+type = "native"
+library = "libsigflow_plugin_trigger_capture.dylib"
+entry = "sigflow_plugin_create"
+
+# Time-domain windowed capture (digital-storage-oscilloscope style external
+# trigger). Buffers the signal stream in a ring; when a trigger marker arrives
+# on `trigger`, the captured window is located by the trigger's *event time*
+# (header.t0_ns) — not its arrival time — so transport/scheduling jitter does
+# not move the window. The window is emitted on `capture` as a contiguous burst
+# of frames carrying the captured samples' original sample_index / t0_ns.
+
+# Continuous multichannel interleaved f32 input. channels and the sample rate
+# are inferred from the frames themselves (channels = bytes/(n_samples*4);
+# fs from consecutive t0_ns/sample_index), so they are not parameters.
+[[ports]]
+id = "signal"
+direction = "consumer"
+semantic_type = { kind = "timeseries.signal", dtype = "f32" }
+
+# Trigger markers: the event time is the frame's header.t0_ns (payload, if any,
+# is ignored). A marker frame typically carries n_samples = 0.
+[[ports]]
+id = "trigger"
+direction = "consumer"
+semantic_type = { kind = "event.trigger" }
+
+# Captured window, streamed out as contiguous frames (same interleaved layout
+# as the input). A new capture starts with FLAG_DISCONTINUITY set; gap_samples
+# on that frame reports how many pre-trigger samples were missing (front
+# eviction) when the capture was partial.
+[[ports]]
+id = "capture"
+direction = "producer"
+semantic_type = { kind = "timeseries.signal", dtype = "f32", clock_domain = "host_monotonic" }
+
+# Per-channel window length, in samples.
+[[parameters]]
+id = "window_samples"
+param_type = "u32"
+range = { u32_range = { min = 16, max = 1000000 } }
+default = { u32 = 2048 }
+unit = "samples"
+label = "Window length (per channel)"
+
+# Where the trigger instant sits inside the window: 0.0 = window starts at the
+# trigger (all post-trigger), 1.0 = window ends at the trigger (all pre-trigger).
+[[parameters]]
+id = "trigger_pos"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 1.0 } }
+default = { f64 = 0.3 }
+label = "Trigger position (0..1)"
+
+# Manual ring headroom beyond the window, to absorb the trigger-vs-data arrival
+# skew so late triggers still find their pre-trigger samples buffered.
+[[parameters]]
+id = "latency_margin_ms"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 10000.0 } }
+default = { f64 = 50.0 }
+unit = "ms"
+label = "Latency margin"
+
+# When true, grow the ring headroom automatically from the observed
+# trigger-vs-data skew (p99 of recent triggers), on top of the manual margin.
+[[parameters]]
+id = "auto_size"
+param_type = "bool"
+default = { bool = false }
+label = "Auto-size ring from observed skew"
+
+# Hard ceiling (ms) on the auto-sized headroom. Bounds ring memory even if the
+# skew statistics get poisoned by pathological events（陈年补传触发之类；无此
+# 闸真机曾被一条 2.8h 旧触发撑到 GB 级 OOM）。Manual latency_margin_ms is not
+# affected — you own what you set explicitly.
+[[parameters]]
+id = "max_margin_ms"
+param_type = "f64"
+range = { f64_range = { min = 1000.0, max = 600000.0 } }
+default = { f64 = 30000.0 }
+unit = "ms"
+label = "Auto-size margin ceiling"
+
+# When true, append an extra channel to every captured row that steps from 0 to
+# `trigger_level` at the trigger sample — a visual marker showing WHERE in the
+# window the event landed. The downstream monitor auto-derives the extra channel
+# from the wider rows (per-channel n_samples is unchanged).
+[[parameters]]
+id = "trigger_channel"
+param_type = "bool"
+default = { bool = true }
+label = "Append trigger marker channel"
+
+# High level of the trigger marker channel (low level is 0).
+[[parameters]]
+id = "trigger_level"
+param_type = "f64"
+range = { f64_range = { min = -1000000.0, max = 1000000.0 } }
+default = { f64 = 3.3 }
+unit = "V"
+label = "Trigger marker high level"
+
+[[actions]]
+id = "reset"
+label = "Reset buffer and pending capture"

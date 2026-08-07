@@ -1,0 +1,28 @@
+# sigflow.ui.number_input — 数值参数输入框（MVP 8 控件之一）。纯 manifest 包。
+name = "sigflow.ui.number_input"
+version = "0.1.0"
+category = "ui_widget"
+
+[runtime]
+type = "native"
+library = "widget.json"
+entry = "unused"
+
+[widget]
+widget_type = "number_input"
+bindable_to = [
+  { kind = "param", data_type = "f64" },
+  { kind = "param", data_type = "f32" },
+  { kind = "param", data_type = "u32" },
+  { kind = "param", data_type = "i32" },
+]
+
+[widget.config_schema.unit_label]
+type = "string"
+
+[widget.config_schema.decimal_places]
+type = "u32"
+default = 2
+
+[widget.config_schema.label]
+type = "string"

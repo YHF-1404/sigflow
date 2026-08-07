@@ -1,0 +1,41 @@
+# sigflow.ui.waveform_chart — 时域波形图（MVP 8 控件之一）。绑 producer 端口,
+# 数据走 tap（窗口/刷新率/统计量配置在绑定的 tap 段）。纯渲染,不含触发/捕获
+# 逻辑。y_min/y_max 缺省则自适应量程。纯 manifest 包。
+name = "sigflow.ui.waveform_chart"
+version = "0.1.0"
+category = "ui_widget"
+
+[runtime]
+type = "native"
+library = "widget.json"
+entry = "unused"
+
+[widget]
+widget_type = "waveform_chart"
+bindable_to = [{ kind = "port" }]
+
+[widget.config_schema.y_min]
+type = "f64"
+
+[widget.config_schema.y_max]
+type = "f64"
+
+[widget.config_schema.line_color]
+type = "string"
+default = "#38bdf8"
+
+[widget.config_schema.show_grid]
+type = "bool"
+default = true
+
+[widget.config_schema.show_stats]
+type = "bool"
+default = true
+
+# 通道显示名，, 或 | 分隔（如 "sig|trig|thr"；缺省 ch0..chN）。
+[widget.config_schema.labels]
+type = "string"
+
+# 客户端历史环容量（scan 数/通道，挂载时定容；缺省 524288 ≈ 64k 采样率下 8s）。
+[widget.config_schema.history_scans]
+type = "f64"

@@ -1,0 +1,21 @@
+[package]
+name = "sigflow-plugin-usb-adc"
+version = "0.1.0"
+edition = "2021"
+
+# Subprocess (Process runtime) plugin — a binary, not a cdylib. Talks to the
+# USB ISO ADC device. rusb is built with the vendored libusb so the crate
+# compiles without a system libusb (device access still needs real hardware +
+# udev rules on Linux).
+[[bin]]
+name = "sigflow-plugin-usb-adc"
+path = "src/main.rs"
+
+[dependencies]
+sigflow-plugin-sdk = { path = "../../../sdk/rust" }
+rusb = { version = "0.9", features = ["vendored"] }
+libusb1-sys = "0.7"
+libc = "0.2"
+
+[dev-dependencies]
+toml = "0.8"

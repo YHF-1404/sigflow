@@ -1,0 +1,36 @@
+name = "sigflow.dsp.channel_select"
+version = "0.1.0"
+category = "compute"
+
+# 通用通道选择器：从多通道交织 f32 流中选出参数列表指定的列，输出列顺序
+# = 列表顺序（下游按位置约定消费）。无状态逐帧变换：帧头
+# （sample_index/t0/flags/gap）与随帧注解原样透传，chunk 边界不动——
+# 对 windowed capture 流和连续流都成立。
+[runtime]
+type = "native"
+library = "libsigflow_plugin_channel_select.dylib"
+entry = "sigflow_plugin_create"
+
+[[ports]]
+id = "signal_in"
+direction = "consumer"
+semantic_type = { kind = "timeseries.signal", dtype = "f32" }
+
+[[ports]]
+id = "signal_out"
+direction = "producer"
+semantic_type = { kind = "timeseries.signal", dtype = "f32" }
+
+# 逗号分隔的 0 基列下标（如 "3,5"）；空串 = 全通（恒等透传）。
+# 越界列触发一次性告警并跳帧（直到修正）。
+[[parameters]]
+id = "channels"
+param_type = "string"
+default = { string = "" }
+label = "Selected columns (comma-separated, empty = all)"
+
+[[parameters]]
+id = "verbose"
+param_type = "bool"
+default = { bool = false }
+label = "Log selection changes"
