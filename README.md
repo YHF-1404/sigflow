@@ -29,7 +29,10 @@ sigflow 把信号处理组织成一张节点图：每个节点挂一个插件（
 git clone https://github.com/YHF-1404/sigflow.git && cd sigflow
 cargo build            # 全部 crate + 插件（独立 workspace，无外部依赖）
 
-# 装好 sigflow-cli（预编译包见 Releases）后，构建并安装 hello 图例所需插件：
+# 装核心（sigflow-shell/cli 预编译包，平台自动探测）：
+curl -fsSL https://raw.githubusercontent.com/YHF-1404/sigflow/main/install.sh | sh
+
+# 构建并安装 hello 图例所需插件：
 for p in sine-generator passthrough data-monitor; do
     ( cd plugins/native/$p && ./build.sh )
     sigflow-cli plugin install plugins/native/$p/pkg
