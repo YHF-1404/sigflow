@@ -40,7 +40,15 @@ sh example/hello.sh    # sine → gain → mon，VOFA UDP + 编辑器波形脸
 
 ## 写一个插件
 
-每个插件是一个自包含目录：
+用脚手架生成空白工程（Rust native / Rust process / Python process 三种形态）：
+
+```sh
+tools/new-plugin.sh --lang rust --runtime native --name my-filter ~/dev/my-filter
+cd ~/dev/my-filter && ./build.sh && sigflow-cli plugin install pkg
+```
+
+SDK 依赖默认钉住本仓库当前 tag 的 git 依赖，开箱即编译；对着克隆仓库
+开发用 `--path-sdk`。每个插件是一个自包含目录：
 
 ```
 my-plugin/

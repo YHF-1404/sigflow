@@ -1,0 +1,29 @@
+# Python 子进程插件契约。command 指向 build.sh 生成的 run.sh 包装
+# （烙定构建机的 python3 解释器；PYTHON=... ./build.sh 可指定）。
+name = "__PLUGIN_ID__"
+version = "0.1.0"
+category = "compute"
+
+[runtime]
+type = "process"
+command = "run.sh"
+script = ""
+protocol = "sigflow-plugin-v1"
+
+[[ports]]
+id = "in"
+direction = "consumer"
+semantic_type = { kind = "any" }
+
+[[ports]]
+id = "out"
+direction = "producer"
+semantic_type = { kind = "any" }
+
+[[parameters]]
+id = "gain"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 10.0 } }
+default = { f64 = 1.0 }
+hot_change = true
+label = "Gain"

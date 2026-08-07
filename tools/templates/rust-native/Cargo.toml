@@ -1,0 +1,15 @@
+[package]
+name = "__PLUGIN_NAME__"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# SDK 重导出插件所需的 Frame/Param 类型。脚手架会把这一行改写成
+# tag 钉住的 git 依赖（或 --path-sdk 的本地路径）。
+sigflow-plugin-sdk = { git = "https://github.com/YHF-1404/sigflow.git", branch = "main" }
+
+[dev-dependencies]
+toml = "0.8"

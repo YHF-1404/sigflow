@@ -1,0 +1,57 @@
+name: ci
+
+# 三道门：workspace 构建+测试（linux/macos）、Python SDK 测试、
+# 脚手架冒烟（生成 → build → stage，防模板腐烂）。
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}
+      - run: cargo build --workspace
+      - run: cargo test --workspace
+
+  python-sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install pytest
+      - run: pytest sdk/python/tests -q
+
+  scaffold-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-scaffold-${{ hashFiles('Cargo.lock') }}
+      - name: generate + build all three templates
+        run: |
+          tools/new-plugin.sh --lang rust --runtime native  --name ci-native  --path-sdk /tmp/gen/ci-native
+          tools/new-plugin.sh --lang rust --runtime process --name ci-process --path-sdk /tmp/gen/ci-process
+          tools/new-plugin.sh --lang python                 --name ci-py      /tmp/gen/ci-py
+          (cd /tmp/gen/ci-native  && ./build.sh)
+          (cd /tmp/gen/ci-process && ./build.sh)
+          (cd /tmp/gen/ci-py      && ./build.sh)
+          test -f /tmp/gen/ci-native/pkg/manifest.toml
+          test -f /tmp/gen/ci-process/pkg/manifest.toml
+          test -x /tmp/gen/ci-py/pkg/run.sh

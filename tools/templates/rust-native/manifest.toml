@@ -1,0 +1,27 @@
+# __PLUGIN_NAME__ 的契约：身份、端口、参数、动作。壳体在 plugin install
+# 时解析此文件；代码里不重复声明（Plugin::new 会拿到解析结果）。
+name = "__PLUGIN_ID__"
+version = "0.1.0"
+category = "compute"
+
+[runtime]
+type = "native"
+library = "lib__PLUGIN_SNAKE__.so"   # build.sh 按平台重写此字段
+entry = "sigflow_plugin_create"
+
+[[ports]]
+id = "in"
+direction = "consumer"
+semantic_type = { kind = "any" }
+
+[[ports]]
+id = "out"
+direction = "producer"
+semantic_type = { kind = "any" }
+
+[[parameters]]
+id = "gain"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 10.0 } }
+default = { f64 = 1.0 }
+label = "Gain"

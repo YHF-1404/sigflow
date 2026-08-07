@@ -1,0 +1,12 @@
+[package]
+name = "__PLUGIN_NAME__"
+version = "0.1.0"
+edition = "2021"
+
+# 子进程（Process runtime）插件是二进制，不是 cdylib。
+[[bin]]
+name = "__PLUGIN_NAME__"
+path = "src/main.rs"
+
+[dependencies]
+sigflow-plugin-sdk = { git = "https://github.com/YHF-1404/sigflow.git", branch = "main" }
