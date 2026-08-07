@@ -21,6 +21,7 @@ sigflow 把信号处理组织成一张节点图：每个节点挂一个插件（
 | `plugins/process` | 子进程插件参考实现（rust-counter / usb-adc） |
 | `plugins/ui` | UI 控件 manifest ×10（button / slider / heatmap / waveform-chart / …） |
 | `example/` | 图例脚本（`hello.sh` 无硬件即跑） |
+| `deploy/` | 部署引擎 `redeploy.sh`（本地/ssh/adb 三路，项目仓库以薄 wrapper 接入）+ Android 自启资产 |
 | `docs/` | 专题文档（触发捕获端到端、VOFA 波形） |
 
 ## 快速开始
