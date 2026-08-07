@@ -55,3 +55,10 @@ jobs:
           test -f /tmp/gen/ci-native/pkg/manifest.toml
           test -f /tmp/gen/ci-process/pkg/manifest.toml
           test -x /tmp/gen/ci-py/pkg/run.sh
+      - name: generate + build project skeleton
+        run: |
+          mkdir -p /tmp/projroot
+          ln -s "$GITHUB_WORKSPACE" /tmp/projroot/sigflow-public
+          tools/new-project.sh --plugin ci-filter /tmp/projroot/ci-proj
+          (cd /tmp/projroot/ci-proj && cargo build && cargo test)
+          /tmp/projroot/ci-proj/redeploy.sh starter --phase list 2>&1 | grep -q "未知 --phase" 

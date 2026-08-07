@@ -42,6 +42,15 @@ sigflow-cli plugin install plugins/ui/waveform-chart   # mon 的波形脸控件
 sh example/hello.sh    # sine → gain → mon，VOFA UDP + 编辑器波形脸
 ```
 
+## 起一个项目
+
+业务插件多了就建项目仓库（插件集 + 图例 + 部署入口，兄弟 checkout 布局）：
+
+```sh
+tools/new-project.sh --plugin my-filter ../my-project
+cd ../my-project && cargo build && ./redeploy.sh starter
+```
+
 ## 写一个插件
 
 用脚手架生成空白工程（Rust native / Rust process / Python process 三种形态）：

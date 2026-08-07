@@ -1,0 +1,6 @@
+# cross（docker）构建时把兄弟 sigflow-public checkout 挂进容器——根
+# Cargo.toml [patch] 的 ../sigflow-public 路径依赖才解析得到。
+# SIGFLOW_SIBLING 由部署引擎在调用 cross 前导出为 sigflow-public 根的
+# 绝对路径。
+[build.env]
+volumes = ["SIGFLOW_SIBLING"]
