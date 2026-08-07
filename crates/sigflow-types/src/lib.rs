@@ -7,3 +7,5 @@ pub mod rpc;
 pub mod semantic;
 pub mod time;
 pub mod ui;
+
+pub use plugin::PLUGIN_ABI_VERSION;

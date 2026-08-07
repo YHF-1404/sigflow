@@ -1,3 +1,11 @@
+/// Native plugin C ABI version. Crossed by value at the dlopen boundary
+/// (`FrameHeader` layout + entry-point signatures) — bump on ANY change to
+/// either, and only in lockstep with the shell's loader. The SDK's
+/// `export_plugin!` exports it as `sigflow_plugin_abi_version()`; the shell
+/// refuses to load a plugin whose value differs (a missing symbol means an
+/// SDK older than v0.1.1 and is accepted with a warning during 0.x).
+pub const PLUGIN_ABI_VERSION: u32 = 1;
+
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "ts")]

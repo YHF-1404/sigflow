@@ -36,6 +36,7 @@ pub use sigflow_types::manifest::{
 };
 pub use sigflow_types::param::ParamValue;
 pub use sigflow_types::plugin::{NativeRuntimeConfig, PluginCategory, RuntimeConfig};
+pub use sigflow_types::PLUGIN_ABI_VERSION;
 pub use sigflow_types::time::mono_ns;
 
 // Re-export serde_json so that the macro expansion can reference it
@@ -88,6 +89,7 @@ pub trait Plugin: Send {
 ///
 /// | Symbol | Purpose |
 /// |---|---|
+/// | `sigflow_plugin_abi_version` | ABI handshake — returns [`PLUGIN_ABI_VERSION`] |
 /// | `sigflow_plugin_create` | Allocate a new instance, given the manifest JSON the shell parsed from `manifest.toml` |
 /// | `sigflow_plugin_set_param` | Set a parameter (id + JSON value) |
 /// | `sigflow_plugin_process` | Run the processing function |
@@ -105,6 +107,13 @@ pub trait Plugin: Send {
 #[macro_export]
 macro_rules! export_plugin {
     ($plugin_type:ty) => {
+        /// ABI handshake: the shell compares this against its own
+        /// `PLUGIN_ABI_VERSION` before touching any other symbol.
+        #[no_mangle]
+        pub extern "C" fn sigflow_plugin_abi_version() -> u32 {
+            $crate::PLUGIN_ABI_VERSION
+        }
+
         /// Allocate a plugin instance. `manifest_json` is the manifest the
         /// shell loaded from `manifest.toml`; the macro deserializes it
         /// before calling `Plugin::new`. Returns null on invalid JSON.
