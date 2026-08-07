@@ -76,8 +76,13 @@ if [ -n "$PLUGIN" ]; then
     chmod +x "$DEST/example/starter.sh"
 fi
 
+# 首 commit：无 git 身份配置的环境（CI 跑者）用回退身份
+_gn="$(git config user.name 2>/dev/null || true)"
+_ge="$(git config user.email 2>/dev/null || true)"
 ( cd "$DEST" && git init -q -b main && git add -A \
-    && git commit -q -m "init: ${NAME} —— sigflow 项目骨架（new-project.sh 生成）" )
+    && git -c user.name="${_gn:-sigflow-new-project}" \
+          -c user.email="${_ge:-new-project@sigflow.local}" \
+          commit -q -m "init: ${NAME} —— sigflow 项目骨架（new-project.sh 生成）" )
 
 cat <<EOF
 生成完毕：${DEST}（项目 ${NAME}${PLUGIN:+，含插件 ${PLUGIN}}）
