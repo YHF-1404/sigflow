@@ -100,7 +100,10 @@ impl DataMonitor {
 
     /// Encode the frame as JustFloat and send it to VOFA+ in MTU-sized datagrams.
     fn send_vofa(&mut self, input: &Frame) {
-        let total_f32 = input.data.len() / 4;
+        // 只看样本载荷——带尾随注解的帧（FLAG_ANNOTATED）直接用 input.data
+        // 会把注解字节当样本编码，且 total/n_samples 除不尽会错判单通道。
+        let data = input.samples();
+        let total_f32 = data.len() / 4;
         if total_f32 == 0 {
             return;
         }
@@ -124,7 +127,7 @@ impl DataMonitor {
             return;
         }
 
-        justfloat_encode(input.data, channels, &mut self.vofa_buf);
+        justfloat_encode(data, channels, &mut self.vofa_buf);
 
         let row_stride = channels * 4 + 4;
         let chunk = (MAX_DGRAM / row_stride).max(1) * row_stride;
@@ -191,7 +194,7 @@ impl Plugin for DataMonitor {
             return ProcessOutcome::Ok;
         }
         if let Some(input) = inputs.first() {
-            let data = input.data;
+            let data = input.samples(); // 统计同样只算样本载荷，不吃注解字节
             let num_samples = data.len() / 4;
             for i in 0..num_samples {
                 let offset = i * 4;
