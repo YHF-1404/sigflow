@@ -60,6 +60,6 @@ done
 
 printf '\n\033[1;32mhello 图就绪。\033[0m\n'
 printf '  正弦流(1ch) → VOFA+ UDP JustFloat  %s:%s\n' "$VOFA_HOST" "$RAW_PORT"
-printf '  节点编辑器  → ws://<本机IP>:%s/ws（mon 脸上看波形）\n' "$SIGFLOW_ROOT_PORT"
+printf '  节点编辑器  → http://<本机IP>:%s/（mon 脸上看波形）\n' "$SIGFLOW_ROOT_PORT"
 printf '  节点日志    → tail -f %s/children/mon/node.log\n' "$NODE_DIR"
 printf '  收摊        → sigflow-cli stop\n'

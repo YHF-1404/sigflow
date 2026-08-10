@@ -508,7 +508,7 @@ deploy_remote() {
 
     printf '\n\033[1;32m远程部署完成：%s（%s/%s，图例：%s）\033[0m\n' \
         "$RHOST" "$rarch" "$pkgkind" "$(basename "$GRAPH_SCRIPT")"
-    printf '编辑器：ws://%s:%s/ws\n' "$RHOST" "$SIGFLOW_ROOT_PORT"
+    printf '编辑器：http://%s:%s/\n' "$RHOST" "$SIGFLOW_ROOT_PORT"
 }
 
 # ============================================================================
@@ -638,7 +638,7 @@ echo \"plugins installed: \$(ls \$HOME/.sigflow/plugins | wc -l)\"
 
     printf '\n\033[1;32mAndroid 部署完成：%s（%s，图例：%s）\033[0m\n' \
         "$RHOST" "$abi" "$(basename "$GRAPH_SCRIPT")"
-    printf '编辑器：ws://%s:%s/ws\n' "${RHOST%%:*}" "$SIGFLOW_ROOT_PORT"
+    printf '编辑器：http://%s:%s/\n' "${RHOST%%:*}" "$SIGFLOW_ROOT_PORT"
     printf '设备图日志：adb -s %s shell cat /tmp/sigflow-graph.log\n' "$target"
 }
 

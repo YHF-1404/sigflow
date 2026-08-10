@@ -50,5 +50,5 @@ done
 
 printf '\n\033[1;32m__PROJECT_NAME__ starter 图就绪。\033[0m\n'
 printf '  信号流(1ch) → VOFA+ UDP JustFloat  %s:%s\n' "$VOFA_HOST" "$RAW_PORT"
-printf '  节点编辑器  → ws://<本机IP>:%s/ws\n' "$SIGFLOW_ROOT_PORT"
+printf '  节点编辑器  → http://<本机IP>:%s/（webui 内嵌在壳体）\n' "$SIGFLOW_ROOT_PORT"
 printf '  收摊        → sigflow-cli stop\n'
