@@ -428,8 +428,8 @@ deploy_remote() {
     ( cd "$PUBLIC_DIR" && CARGO_TARGET_DIR="$PUBLIC_DIR/target/xdeploy" \
         cross build --release --target "$target" --workspace )
     if [ -n "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/Cargo.toml" ]; then
-        # SIGFLOW_SIBLING：项目仓库的 Cross.toml 把 sigflow-public 挂进容
-        # 器，其 [patch] 的 ../sigflow-public 路径依赖才解析得到
+        # SIGFLOW_SIBLING：项目仓库的 Cross.toml 把 sigflow 挂进容
+        # 器，其 [patch] 的 ../sigflow 路径依赖才解析得到
         ( cd "$PROJECT_DIR" && SIGFLOW_SIBLING="$PUBLIC_DIR" \
             CARGO_TARGET_DIR="$PROJECT_DIR/target/xdeploy" \
             cross build --release --target "$target" --workspace )

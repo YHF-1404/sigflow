@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # redeploy.sh — __PROJECT_NAME__ 部署入口：项目参数默认值 + 转发清单，
-# 机制在公共引擎（../sigflow-public/deploy/redeploy.sh）。
+# 机制在公共引擎（../sigflow/deploy/redeploy.sh）。
 #   ./redeploy.sh <graph>                 # 本地部署
 #   ./redeploy.sh <graph> --host H --adb  # Android 设备
 # 项目私货钩子放 deploy/hooks/（precheck.sh / adb-pre-install.sh，见
@@ -9,7 +9,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 export SIGFLOW_PROJECT_DIR="$HERE"
-export SIGFLOW_PUBLIC_DIR="${SIGFLOW_PUBLIC_DIR:-$(cd "$HERE/.." && pwd)/sigflow-public}"
+export SIGFLOW_PUBLIC_DIR="${SIGFLOW_PUBLIC_DIR:-$(cd "$HERE/.." && pwd)/sigflow}"
 
 # ---- 项目参数默认值（图例 env）---------------------------------------------
 export NODE_DIR="${NODE_DIR:-/tmp/sigflow-__PROJECT_NAME__}"

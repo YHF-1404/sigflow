@@ -10,7 +10,7 @@
 #
 # 生成内容：Cargo.toml（workspace + 兄弟 [patch]）、Cross.toml、
 # redeploy.sh 部署 wrapper、deploy/hooks/、plugins/、example/、git init。
-# 兄弟目录约定：本仓库（sigflow-public）与新项目并排；核心源码
+# 兄弟目录约定：本仓库（sigflow）与新项目并排；核心源码
 # （../sigflow-core）可选。
 set -eu
 
@@ -89,7 +89,7 @@ cat <<EOF
 
 下一步：
   cd ${DEST}
-  cargo build                       # 经 [patch] 读兄弟 ../sigflow-public
+  cargo build                       # 经 [patch] 读兄弟 ../sigflow
 ${PLUGIN:+  ./redeploy.sh starter             # 部署起步图例（sine → ${PLUGIN} → mon）
 }  ./redeploy.sh hello               # 或公共入门图例
   # 项目参数与转发清单改 redeploy.sh；设备预检/清场钩子见 deploy/hooks/

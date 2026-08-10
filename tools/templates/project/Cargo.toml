@@ -1,10 +1,10 @@
 # __PROJECT_NAME__ — sigflow 项目：业务插件 + 图例 + 部署 wrapper。
 #
 # 对 sigflow 公共面的依赖走 git URL + [patch] 兄弟目录重定向：本地开发
-# 直接读 ../sigflow-public，未提交的 SDK 改动即时可见，不需要先 push。
+# 直接读 ../sigflow，未提交的 SDK 改动即时可见，不需要先 push。
 [patch."https://github.com/YHF-1404/sigflow.git"]
-sigflow-types = { path = "../sigflow-public/crates/sigflow-types" }
-sigflow-plugin-sdk = { path = "../sigflow-public/sdk/rust" }
+sigflow-types = { path = "../sigflow/crates/sigflow-types" }
+sigflow-plugin-sdk = { path = "../sigflow/sdk/rust" }
 
 [workspace]
 resolver = "2"
