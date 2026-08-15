@@ -1,7 +1,8 @@
 name: ci
 
-# 三道门：workspace 构建+测试（linux/macos）、Python SDK 测试、
-# 脚手架冒烟（生成 → build → stage，防模板腐烂）。
+# 三道门：workspace 构建+测试（linux/macos/windows）、Python SDK 测试、
+# 脚手架冒烟（生成 → build → stage，防模板腐烂；linux + windows 两个口味，
+# windows 走 Git Bash，验证 .exe/.dll/run.cmd 的 stage 路径）。
 on:
   push:
   pull_request:
@@ -11,7 +12,7 @@ jobs:
   build-test:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -27,7 +28,10 @@ jobs:
       - run: cargo test --workspace
 
   python-sdk:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - run: pip install pytest
@@ -61,4 +65,36 @@ jobs:
           ln -s "$GITHUB_WORKSPACE" /tmp/projroot/sigflow
           tools/new-project.sh --plugin ci-filter /tmp/projroot/ci-proj
           (cd /tmp/projroot/ci-proj && cargo build && cargo test)
-          /tmp/projroot/ci-proj/redeploy.sh starter --phase list 2>&1 | grep -q "未知 --phase" 
+          /tmp/projroot/ci-proj/redeploy.sh starter --phase list 2>&1 | grep -q "未知 --phase"
+
+  # Windows 侧的模板冒烟：同一批 build.sh 在 Git Bash 下执行，产物换成
+  # .dll / .exe / run.cmd，staged manifest 必须跟着改写。项目骨架步骤不在
+  # 此跑（依赖符号链接）。
+  scaffold-smoke-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-scaffold-windows-${{ hashFiles('Cargo.lock') }}
+      - name: generate + build all three templates
+        run: |
+          tools/new-plugin.sh --lang rust --runtime native  --name ci-native  --path-sdk /tmp/gen/ci-native
+          tools/new-plugin.sh --lang rust --runtime process --name ci-process --path-sdk /tmp/gen/ci-process
+          tools/new-plugin.sh --lang python                 --name ci-py      /tmp/gen/ci-py
+          (cd /tmp/gen/ci-native  && ./build.sh)
+          (cd /tmp/gen/ci-process && ./build.sh)
+          (cd /tmp/gen/ci-py      && ./build.sh)
+          grep -q '\.dll"' /tmp/gen/ci-native/pkg/manifest.toml
+          ls /tmp/gen/ci-native/pkg/*.dll
+          grep -q '\.exe"' /tmp/gen/ci-process/pkg/manifest.toml
+          ls /tmp/gen/ci-process/pkg/*.exe
+          grep -q 'run\.cmd"' /tmp/gen/ci-py/pkg/manifest.toml
+          test -f /tmp/gen/ci-py/pkg/run.cmd
