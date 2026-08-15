@@ -18,7 +18,8 @@
 //! All writes go through [`annotate`] — THE writer library (CLI, GUI and
 //! tools alike; never hand-write these files — rename keeps a file intact,
 //! not a merge correct). It serializes read-modify-write cycles with a
-//! global flock on `annotations/.lock` and offers an optional rev CAS on
+//! global lock on the `annotations/` tree (directory flock on Unix, an
+//! `annotations/.lock` file on Windows) and offers an optional rev CAS on
 //! top for callers that staged an edit against a snapshot.
 
 use std::path::PathBuf;
@@ -262,14 +263,25 @@ pub(crate) fn annotate_at(
     let path = entity.annotation_path(root)?; // ULID gate
 
     // ---- writer lock (held to the end of the function) ----
-    // Flock the annotations/ directory itself, not a dedicated lock file —
-    // its inode survives anything short of deleting the data it guards (see
-    // `DataRoot::annotations_dir`). A read-only fd is enough; flock needs no
-    // write permission.
+    // Unix: flock the annotations/ directory itself, not a dedicated lock
+    // file — its inode survives anything short of deleting the data it
+    // guards (see `DataRoot::annotations_dir`). A read-only fd is enough;
+    // flock needs no write permission.
     let lock_dir = root.annotations_dir();
     std::fs::create_dir_all(&lock_dir)?;
+    #[cfg(not(windows))]
     let lock = std::fs::File::open(&lock_dir)?;
-    lock.lock()?; // flock(LOCK_EX): blocks; released when `lock` drops
+    // Windows: `File::open` cannot produce a directory handle (that needs
+    // backup semantics) and `LockFileEx` does not lock directories anyway —
+    // lock a `.lock` file inside the guarded tree instead. Same lifetime
+    // argument: it can only vanish together with the data it guards.
+    #[cfg(windows)]
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(lock_dir.join(".lock"))?;
+    lock.lock()?; // LOCK_EX / LockFileEx: blocks; released when `lock` drops
 
     // ---- read-modify-write under the lock ----
     let existing = match std::fs::read(&path) {
