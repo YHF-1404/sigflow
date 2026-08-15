@@ -31,6 +31,13 @@ from sigflow_sdk.frame import Frame, FrameHeader, FrameOut
 from sigflow_sdk.plugin import Plugin, PluginFault
 
 
+# Windows text-mode stdout translates "\n" to "\r\n", which would smuggle a
+# CR into every control message; pin the channel to bare LF. (stdin needs no
+# pinning — universal newlines already normalize whatever arrives.)
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(newline="\n")
+
+
 def _read_msg() -> dict:
     """Read one JSON-line message from stdin."""
     line = sys.stdin.readline()
