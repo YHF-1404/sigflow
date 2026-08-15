@@ -30,10 +30,11 @@ echo "Building ${CRATE_NAME} (release)..."
 cargo build --release
 
 # cargo metadata gives us the target dir whether we are in a workspace or
-# building standalone; parse without needing jq/python.
+# building standalone; parse without needing jq/python. On Windows the
+# JSON-escaped path comes out as C:\\foo\\bar — normalize to forward slashes.
 TARGET_DIR="$(cargo metadata --format-version 1 --no-deps \
     | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p' \
-    | head -1)"
+    | head -1 | sed 's|\\\\|/|g')"
 [ -n "$TARGET_DIR" ] || { echo "could not locate cargo target_directory" >&2; exit 1; }
 
 LIB_PATH="${TARGET_DIR}/release/${LIB_FILENAME}"
