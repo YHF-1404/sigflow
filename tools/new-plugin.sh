@@ -70,7 +70,13 @@ STRUCT="$(echo "$NAME" | awk -F- '{ for (i = 1; i <= NF; i++) printf "%s%s", tou
 
 # SDK 依赖行（整行替换模板里的 sigflow-plugin-sdk = ... 行）
 if [ "$PATH_SDK" = 1 ]; then
-    SDK_DEP="sigflow-plugin-sdk = { path = \"$REPO_ROOT/sdk/rust\" }"
+    SDK_ROOT="$REPO_ROOT"
+    # Git Bash/MSYS：cargo 是 Windows 原生程序，/d/... 形式的 POSIX 路径
+    # 会被当成当前盘根解析；转成 D:/... 混合形式（正斜杠，sed 替换安全）。
+    if command -v cygpath >/dev/null 2>&1; then
+        SDK_ROOT="$(cygpath -m "$REPO_ROOT")"
+    fi
+    SDK_DEP="sigflow-plugin-sdk = { path = \"$SDK_ROOT/sdk/rust\" }"
 else
     TAG="$(git -C "$REPO_ROOT" describe --tags --abbrev=0 2>/dev/null || true)"
     if [ -n "$TAG" ]; then
