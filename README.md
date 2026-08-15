@@ -42,6 +42,10 @@ sigflow-cli plugin install plugins/ui/waveform-chart   # mon 的波形脸控件
 sh example/hello.sh    # sine → gain → mon，VOFA UDP + 编辑器波形脸
 ```
 
+> Windows：以上 `build.sh` / 脚手架脚本在 Git Bash（或 MSYS2）里执行即可，
+> 产物自动切换为 `.dll` / `.exe` / `run.cmd`；`install.sh` 暂无 Windows
+> 预编译包，核心请从源码构建。
+
 ## 起一个项目
 
 业务插件多了就建项目仓库（插件集 + 图例 + 部署入口，兄弟 checkout 布局）：
