@@ -11,6 +11,10 @@
 #   ./redeploy.sh <graph> --host H --passwd P --user U   # 普通用户+sudo
 #   ./redeploy.sh <graph> --host H --adb       # Android 设备（adb 网络连接）
 #
+# Windows（Git Bash/MSYS2）：支持本地部署（核心装到 ~/sigflow，插件
+# build.sh 出 .dll/.exe/run.cmd）；--host/--adb 两路需要 cross/docker
+# 等 Linux 侧工具链，暂不支持从 Windows 主机发起。
+#
 # <graph> 在项目 example/ 与公共 example/ 里按名字解析（路径亦可）。
 # 图例头部自我声明所需插件（缺省 = 两侧全部有 build.sh 的插件）：
 #   # requires-native: trigger-capture data-monitor ...
@@ -29,7 +33,7 @@
 # 项目钩子（$SIGFLOW_PROJECT_DIR/deploy/hooks/，都可缺省）：
 #   precheck.sh        装完核心后在部署目标机上 source（本地与 --phase
 #                      remote 两路）；引擎函数 note/die/priv 可用，
-#                      $HOOK_OS = arch|debian|macos|linux；自行按
+#                      $HOOK_OS = arch|debian|macos|windows|linux；自行按
 #                      NATIVE_PLUGINS/PROCESS_PLUGINS（本地）或装船目录
 #                      （远端）决定要不要干活
 #   adb-pre-install.sh 独立 sh，推到 Android 设备上、装包前执行（清场
@@ -78,6 +82,11 @@ NODE_DIR="${NODE_DIR:-/tmp/sigflow-node}"
 export SIGFLOW_ROOT_PORT="${SIGFLOW_ROOT_PORT:-9500}"
 export SIGFLOW_BIND_HOST="${SIGFLOW_BIND_HOST:-0.0.0.0}"
 export CARGO_NET_GIT_FETCH_WITH_CLI=true
+# Windows(Git Bash)：DATA_ROOT 经 env 直达原生进程，MSYS 只转换命令行参数
+# 不转换 env——预先转成 C:/... 混合形式（NODE_DIR 走 CLI 参数，自动转换）。
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) DATA_ROOT="$(cygpath -m "$DATA_ROOT")" ;;
+esac
 export NODE_DIR DATA_ROOT
 
 # 远程模式转发到远端的 env 名单 = 引擎基础 + wrapper 的 SIGFLOW_FORWARD_VARS
@@ -250,9 +259,10 @@ EXP
 }
 
 # ---- 平台检测 ---------------------------------------------------------------
-detect_os() {  # 输出 arch|debian|macos|linux（在待部署机上调用）
+detect_os() {  # 输出 arch|debian|macos|windows|linux（在待部署机上调用）
     case "$(uname -s)" in
         Darwin) echo macos; return ;;
+        MINGW*|MSYS*|CYGWIN*) echo windows; return ;;
         Linux)  ;;
         *) echo linux; return ;;
     esac
@@ -290,9 +300,17 @@ build_graph_and_start() {
 stop_running() {
     step "停止运行中的 sigflow"
     sigflow-cli stop >/dev/null 2>&1 || true
-    pkill -f sigflow-shell 2>/dev/null || true
-    sleep 0.5
-    pkill -9 -f sigflow-shell 2>/dev/null || true
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            # Windows 无 SIGTERM/pkill；stop 已走 shutdown RPC，这里只兜底强杀
+            # （//F//IM：双斜杠防 Git Bash 把 /F 当路径转换）
+            sleep 0.5
+            taskkill //F //IM sigflow-shell.exe >/dev/null 2>&1 || true ;;
+        *)
+            pkill -f sigflow-shell 2>/dev/null || true
+            sleep 0.5
+            pkill -9 -f sigflow-shell 2>/dev/null || true ;;
+    esac
     rm -rf /tmp/iceoryx2 2>/dev/null || true
     rm -f /dev/shm/iox2_* 2>/dev/null || true
     note "done（含 iceoryx2 残留清理）"
@@ -323,6 +341,15 @@ install_core_local() {  # $1 = os kind
                 ( cd "$CORE_DIR" && ./package.sh --macos )
                 local mpkg; mpkg="$(ls -t "$CORE_DIR"/dist/sigflow-*.pkg | head -1)"
                 priv installer -pkg "$mpkg" -target / ;;
+            windows)
+                # 无包管理器：原生 cargo 构建两个 exe，装到 ~/sigflow
+                # （与 install.sh 同一目录约定，SIGFLOW_WINDOWS_DIR 可改）。
+                ( cd "$CORE_DIR" && cargo build --release -p sigflow-shell -p sigflow-cli )
+                local wdest="${SIGFLOW_WINDOWS_DIR:-$HOME/sigflow}"
+                mkdir -p "$wdest"
+                cp -f "$CORE_DIR"/target/release/sigflow-shell.exe \
+                      "$CORE_DIR"/target/release/sigflow-cli.exe "$wdest/"
+                PATH="$wdest:$PATH"; export PATH ;;
             *)
                 note "未知发行版：cargo build + install 到 /usr/local/bin"
                 ( cd "$CORE_DIR" && cargo build --release -p sigflow-shell -p sigflow-cli )
@@ -334,6 +361,8 @@ install_core_local() {  # $1 = os kind
     else
         step "核心：无源码也未安装——install.sh（GitHub Releases）"
         sh "$PUBLIC_DIR/install.sh"
+        # Windows：install.sh 写的是注册表用户 PATH，本进程看不见——补上
+        [ "$1" != windows ] || { PATH="${SIGFLOW_WINDOWS_DIR:-$HOME/sigflow}:$PATH"; export PATH; }
     fi
     hash -r
     command -v sigflow-cli >/dev/null || die "安装后找不到 sigflow-cli"
