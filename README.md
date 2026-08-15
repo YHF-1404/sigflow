@@ -43,8 +43,9 @@ sh example/hello.sh    # sine → gain → mon，VOFA UDP + 编辑器波形脸
 ```
 
 > Windows：以上 `build.sh` / 脚手架脚本在 Git Bash（或 MSYS2）里执行即可，
-> 产物自动切换为 `.dll` / `.exe` / `run.cmd`；`install.sh` 暂无 Windows
-> 预编译包，核心请从源码构建。
+> 产物自动切换为 `.dll` / `.exe` / `run.cmd`；`install.sh` 同样可用
+> （v0.1.2 起 Releases 提供免安装 zip，解压到 `~/sigflow` 并写入用户
+> PATH），本地部署走 `deploy/redeploy.sh <graph>`。
 
 ## 起一个项目
 
