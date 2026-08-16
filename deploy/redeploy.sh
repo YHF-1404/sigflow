@@ -96,7 +96,10 @@ export NODE_DIR DATA_ROOT
 # 远程模式转发到远端的 env 名单 = 引擎基础 + wrapper 的 SIGFLOW_FORWARD_VARS
 FORWARD_VARS=(NODE_DIR GRAPH_NAME SIGFLOW_ROOT_PORT SIGFLOW_BIND_HOST)
 if [ -n "${SIGFLOW_FORWARD_VARS:-}" ]; then
-    read -r -a _extra <<< "$SIGFLOW_FORWARD_VARS"
+    # 词分割整个值（不是 read -a：那只吃第一行，多行清单会静默丢光——
+    # 排查代价极高：远端安静地用图例默认值跑，看不出旋钮没生效）
+    # shellcheck disable=SC2206
+    _extra=($SIGFLOW_FORWARD_VARS)
     FORWARD_VARS+=("${_extra[@]}")
 fi
 for _v in "${FORWARD_VARS[@]}"; do export "${_v?}" 2>/dev/null || true; done
