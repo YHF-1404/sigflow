@@ -609,7 +609,9 @@ EOF
         note "$(du -h "$stage/deploy.tar.gz" | cut -f1) → $RUSER@$RHOST:~/$wdir（Git Bash）"
         # 旧实例的 shell 以装船目录为 cwd，Windows 下被占用的目录删不
         # 掉——预清理前先停旧进程（幂等重部署本就要停）
-        ssh_do "\"$RBASH\" -lc \"taskkill //F //IM sigflow-shell.exe > /dev/null 2>&1; sleep 1; rm -rf \$HOME/$wdir \$HOME/$wdir.tar.gz\""
+        # 连带清 iceoryx2 共享内存残骸（强杀的 shell 留下 shm_state 尸体，
+        # 同名服务下次 open 报 ServiceInCorruptedState）
+        ssh_do "\"$RBASH\" -lc \"taskkill //F //IM sigflow-shell.exe > /dev/null 2>&1; sleep 1; rm -rf \$HOME/$wdir \$HOME/$wdir.tar.gz /c/Temp/iceoryx2 /c/Temp/iox2_*\""
         scp_do "$stage/deploy.tar.gz" "$wdir.tar.gz"
         ssh_do "\"$RBASH\" -lc \"mkdir -p \$HOME/$wdir && tar -C \$HOME/$wdir --strip-components 1 -xzf \$HOME/$wdir.tar.gz\""
 
