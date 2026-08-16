@@ -12,8 +12,11 @@
 #   ./redeploy.sh <graph> --host H --adb       # Android 设备（adb 网络连接）
 #
 # Windows（Git Bash/MSYS2）：支持本地部署（核心装到 ~/sigflow，插件
-# build.sh 出 .dll/.exe/run.cmd）；--host/--adb 两路需要 cross/docker
-# 等 Linux 侧工具链，暂不支持从 Windows 主机发起。
+# build.sh 出 .dll/.exe/run.cmd）；也支持作为 --host 远程**目标**——
+# 本机 mingw 交叉编译核心+插件，远端经 Git for Windows 的 bash 安装
+# 起流（目标机前提：OpenSSH 服务 + Git for Windows 标准路径安装，
+# SIGFLOW_REMOTE_BASH 可指定非标准 bash.exe 路径）。--host/--adb 仍
+# 不支持从 Windows 主机**发起**（需要 cross/docker 等 Linux 侧工具链）。
 #
 # <graph> 在项目 example/ 与公共 example/ 里按名字解析（路径亦可）。
 # 图例头部自我声明所需插件（缺省 = 两侧全部有 build.sh 的插件）：
@@ -46,7 +49,8 @@
 #
 # ssh 远程模式：探测远端架构/发行版 → 本机 cross 交叉编译核心包 + 插件
 # → 装船上传 → 远端执行本脚本 --phase remote（装包、装插件、建图起流）。
-# 密码经 expect 喂 ssh/scp；--user 非 root 时同一密码喂 sudo -S。
+# 密码喂 ssh/scp 优先用 sshpass、缺则 expect；--user 非 root 时同一
+# 密码喂 sudo -S。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -160,13 +164,14 @@ $(list_examples)"
 [ "$PHASE" = remote ] || resolve_graph
 [ "$PHASE" != remote ] || GRAPH_SCRIPT="$REPO_ROOT/graph.sh"
 
-# 插件目录解析：通用插件在公共仓库，项目插件在项目仓库。公共侧优先，
-# 输出绝对路径。
+# 插件目录解析：通用插件在公共仓库，项目插件在项目仓库。项目侧优先——
+# 项目里与公共插件同名的目录是有意覆盖（new-project 生成的图例引用的
+# 是项目插件的 id，公共优先会把它遮蔽成"未安装"）。输出绝对路径。
 plugin_dir() {  # $1 = native|process  $2 = 插件名 → 输出绝对路径
-    if [ -d "$PUBLIC_DIR/plugins/$1/$2" ]; then
-        echo "$PUBLIC_DIR/plugins/$1/$2"
+    if [ -n "$PROJECT_DIR" ] && [ -d "$PROJECT_DIR/plugins/$1/$2" ]; then
+        echo "$PROJECT_DIR/plugins/$1/$2"
     else
-        echo "${PROJECT_DIR:-/nonexistent}/plugins/$1/$2"
+        echo "$PUBLIC_DIR/plugins/$1/$2"
     fi
 }
 
@@ -223,7 +228,10 @@ export SSH_OPTS RUSER RHOST PASSWD
 # RCMD 作为单个 argv 传给 ssh（{*} 只展开选项串，命令串不经 Tcl 重解析——
 # 里面的引号/$ 原样到达远端 shell）。
 ssh_do() {  # ssh_do <单条远端命令字符串>
-    if [ -n "$PASSWD" ]; then
+    if [ -n "$PASSWD" ] && command -v sshpass >/dev/null; then
+        # shellcheck disable=SC2086
+        SSHPASS="$PASSWD" sshpass -e ssh $SSH_OPTS "$RUSER@$RHOST" "$1"
+    elif [ -n "$PASSWD" ]; then
         RCMD="$1" expect <<'EXP'
 set timeout -1
 spawn ssh {*}[split $env(SSH_OPTS)] $env(RUSER)@$env(RHOST) $env(RCMD)
@@ -241,7 +249,10 @@ EXP
 }
 
 scp_do() {  # scp_do <本地文件> <远端路径>
-    if [ -n "$PASSWD" ]; then
+    if [ -n "$PASSWD" ] && command -v sshpass >/dev/null; then
+        # shellcheck disable=SC2086
+        SSHPASS="$PASSWD" sshpass -e scp $SSH_OPTS "$1" "$RUSER@$RHOST:$2"
+    elif [ -n "$PASSWD" ]; then
         SRC="$1" DST="$2" expect <<'EXP'
 set timeout -1
 spawn scp {*}[split $env(SSH_OPTS)] $env(SRC) $env(RUSER)@$env(RHOST):$env(DST)
@@ -412,32 +423,63 @@ deploy_remote() {
     [ -n "$CORE_DIR" ] || die "远程模式需要核心源码 checkout（SIGFLOW_CORE_DIR）——
     或在远端手动装核心（install.sh / Releases）后到远端本地部署"
     command -v cargo  >/dev/null || die "需要 cargo"
-    command -v cross  >/dev/null || die "远程模式需要 cross（cargo install cross）+ docker"
-    command -v expect >/dev/null || [ -z "$PASSWD" ] || die "--passwd 模式需要 expect"
+    { command -v sshpass >/dev/null || command -v expect >/dev/null || [ -z "$PASSWD" ]; } \
+        || die "--passwd 模式需要 sshpass 或 expect"
 
     step "探测远端 $RUSER@$RHOST"
     # expect 会把 spawn 回显/密码提示混进 stdout——远端输出用标记括起来再提取。
     # 远端命令由登录 shell 解析（可能是 fish：不认 \${VAR:-} 与 VAR=v cmd
     # 前缀赋值）——显式包 sh -c，不依赖登录 shell 方言。
-    local probe
-    probe="$(ssh_do "sh -c 'echo __P0__; uname -m; . /etc/os-release 2>/dev/null; echo \${ID:-unknown}:\${ID_LIKE:-}; echo __P1__'")" \
-        || die "ssh 连接失败（root 密码登录被拒时用 --user <用户名>，脚本会走 sudo）"
-    probe="$(echo "$probe" | tr -d '\r' | sed -n '/^__P0__$/,/^__P1__$/p' | sed '1d;$d')"
+    local probe raw rc=0
+    raw="$(ssh_do "sh -c 'echo __P0__; uname -m; . /etc/os-release 2>/dev/null; echo \${ID:-unknown}:\${ID_LIKE:-}; echo __P1__'")" || rc=$?
+    [ "$rc" != 255 ] || die "ssh 连接失败（root 密码登录被拒时用 --user <用户名>，脚本会走 sudo）"
+    probe="$(echo "$raw" | tr -d '\r' | sed -n '/^__P0__$/,/^__P1__$/p' | sed '1d;$d')"
+    local RBASH=""
+    if [ -z "$probe" ]; then
+        # 连上了但没有 sh——大概率是 Windows（OpenSSH 默认 shell 是 cmd，
+        # 报"系统找不到指定的路径"）。改探 Git Bash 的标准安装路径；不能
+        # 用 PATH 上的 bash.exe——System32 那个是 WSL 入口，环境完全不同。
+        # 探测输出沿用同款标记格式，成功即拿到 arch 并烙上 windows 记号。
+        RBASH="${SIGFLOW_REMOTE_BASH:-C:\\Program Files\\Git\\bin\\bash.exe}"
+        raw="$(ssh_do "\"$RBASH\" -c \"echo __P0__; uname -m; echo windows:gitbash; echo __P1__\"")" || true
+        probe="$(echo "$raw" | tr -d '\r' | sed -n '/^__P0__$/,/^__P1__$/p' | sed '1d;$d')"
+        [ -n "$probe" ] || die "远端既无 POSIX sh 也没探到 Git Bash（$RBASH）——
+    Windows 目标需装 Git for Windows（非标准路径用
+    SIGFLOW_REMOTE_BASH=<bash.exe 全路径> 指定）；或在目标机上
+    Git Bash 里本地部署（install.sh + redeploy.sh）"
+    fi
     local rarch rdistro
     rarch="$(echo "$probe" | sed -n 1p)"
     rdistro="$(echo "$probe" | sed -n 2p)"
     local target pkgkind
-    case "$rarch" in
-        x86_64)  target=x86_64-unknown-linux-gnu ;;
-        aarch64) target=aarch64-unknown-linux-gnu ;;
-        *) die "远端架构 '$rarch' 暂不支持" ;;
-    esac
     case "$rdistro" in
-        arch:*|*arch*)            pkgkind=arch ;;
+        windows:*)                  pkgkind=windows ;;
+        arch:*|*arch*)              pkgkind=arch ;;
         debian:*|ubuntu:*|*debian*) pkgkind=debian ;;
         *) pkgkind=linux ;;
     esac
+    case "$pkgkind:$rarch" in
+        windows:x86_64) target=x86_64-pc-windows-gnu ;;
+        windows:*)      die "Windows 远端只支持 x86_64（当前 ${rarch}）" ;;
+        *:x86_64)       target=x86_64-unknown-linux-gnu ;;
+        *:aarch64)      target=aarch64-unknown-linux-gnu ;;
+        *) die "远端架构 '$rarch' 暂不支持" ;;
+    esac
     note "远端：$rarch / $rdistro → target=$target pkg=$pkgkind"
+
+    # 工具链检查按目标分流：windows 用本机 mingw + cargo（无需 docker），
+    # 其余走 cross 容器。
+    local mingw_lnk=""
+    if [ "$pkgkind" = windows ]; then
+        command -v x86_64-w64-mingw32-gcc >/dev/null \
+            || die "windows 目标需要 mingw-w64（pacman -S mingw-w64-gcc / apt install gcc-mingw-w64-x86-64）"
+        rustup target list --installed 2>/dev/null | grep -qx "$target" \
+            || die "缺 rust 目标 ${target}——先 rustup target add ${target}"
+        # cargo 认的 linker env 名：triple 大写、'-'→'_'
+        mingw_lnk="CARGO_TARGET_$(echo "$target" | tr 'a-z-' 'A-Z_')_LINKER=x86_64-w64-mingw32-gcc"
+    else
+        command -v cross >/dev/null || die "远程模式需要 cross（cargo install cross）+ docker"
+    fi
 
     # 独立 target 目录：cross 各 docker 镜像的 host 构建脚本二进制互不兼容，
     # 共用 target/ 会交叉污染缓存（packaging/common.sh 同款隔离）。
@@ -450,18 +492,30 @@ deploy_remote() {
                     aarch64) ( cd "$CORE_DIR" && ./packaging/deb.sh --arch=arm64 ) ;;
                     *)       ( cd "$CORE_DIR" && ./packaging/deb.sh --arch=amd64 ) ;;
                 esac ;;
+        windows) ( cd "$CORE_DIR" && env "$mingw_lnk" \
+                    cargo build --release --target "$target" -p sigflow-shell -p sigflow-cli ) ;;
         *)      ( cd "$CORE_DIR" && cross build --release --target "$target" -p sigflow-shell -p sigflow-cli ) ;;
     esac
 
     step "交叉编译 native 插件（公共侧 + 项目侧 workspace）"
-    ( cd "$PUBLIC_DIR" && CARGO_TARGET_DIR="$PUBLIC_DIR/target/xdeploy" \
-        cross build --release --target "$target" --workspace )
-    if [ -n "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/Cargo.toml" ]; then
-        # SIGFLOW_SIBLING：项目仓库的 Cross.toml 把 sigflow 挂进容
-        # 器，其 [patch] 的 ../sigflow 路径依赖才解析得到
-        ( cd "$PROJECT_DIR" && SIGFLOW_SIBLING="$PUBLIC_DIR" \
-            CARGO_TARGET_DIR="$PROJECT_DIR/target/xdeploy" \
+    if [ "$pkgkind" = windows ]; then
+        # mingw 直出，路径依赖原生解析，无需 cross 容器与 SIGFLOW_SIBLING
+        ( cd "$PUBLIC_DIR" && CARGO_TARGET_DIR="$PUBLIC_DIR/target/xdeploy" \
+            env "$mingw_lnk" cargo build --release --target "$target" --workspace )
+        if [ -n "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/Cargo.toml" ]; then
+            ( cd "$PROJECT_DIR" && CARGO_TARGET_DIR="$PROJECT_DIR/target/xdeploy" \
+                env "$mingw_lnk" cargo build --release --target "$target" --workspace )
+        fi
+    else
+        ( cd "$PUBLIC_DIR" && CARGO_TARGET_DIR="$PUBLIC_DIR/target/xdeploy" \
             cross build --release --target "$target" --workspace )
+        if [ -n "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/Cargo.toml" ]; then
+            # SIGFLOW_SIBLING：项目仓库的 Cross.toml 把 sigflow 挂进容
+            # 器，其 [patch] 的 ../sigflow 路径依赖才解析得到
+            ( cd "$PROJECT_DIR" && SIGFLOW_SIBLING="$PUBLIC_DIR" \
+                CARGO_TARGET_DIR="$PROJECT_DIR/target/xdeploy" \
+                cross build --release --target "$target" --workspace )
+        fi
     fi
 
     step "装船"
@@ -475,6 +529,9 @@ deploy_remote() {
     case "$pkgkind" in
         arch)   cp "$(ls -t "$CORE_DIR"/dist/sigflow-*.pkg.tar.zst | head -1)" "$stage/deploy/pkg/" ;;
         debian) cp "$(ls -t "$CORE_DIR"/dist/sigflow_*.deb | head -1)" "$stage/deploy/pkg/" ;;
+        windows) mkdir -p "$stage/deploy/pkg/bin"
+                cp "$CARGO_TARGET_DIR/$target/release/sigflow-shell.exe" \
+                   "$CARGO_TARGET_DIR/$target/release/sigflow-cli.exe" "$stage/deploy/pkg/bin/" ;;
         *)      mkdir -p "$stage/deploy/pkg/bin"
                 cp "$CARGO_TARGET_DIR/$target/release/sigflow-shell" \
                    "$CARGO_TARGET_DIR/$target/release/sigflow-cli" "$stage/deploy/pkg/bin/" ;;
@@ -490,7 +547,11 @@ deploy_remote() {
             *)               tdir="$PROJECT_DIR/target/xdeploy" ;;
         esac
         crate="$(sed -n 's/^name = "\(.*\)"/\1/p' "$pdir/Cargo.toml" | head -1)"
-        lib="lib$(echo "$crate" | tr '-' '_').so"
+        if [ "$pkgkind" = windows ]; then
+            lib="$(echo "$crate" | tr '-' '_').dll"   # windows 无 lib 前缀
+        else
+            lib="lib$(echo "$crate" | tr '-' '_').so"
+        fi
         [ -f "$tdir/$target/release/$lib" ] || die "缺 ${lib}（cross workspace 构建产物）"
         mkdir -p "$stage/deploy/plugins-native/$p"
         cp "$tdir/$target/release/$lib" "$stage/deploy/plugins-native/$p/"
@@ -515,16 +576,6 @@ deploy_remote() {
     cp "$0" "$stage/deploy/redeploy.sh"
     cp "$GRAPH_SCRIPT" "$stage/deploy/graph.sh"
 
-    # 装船目录按远端用户隔离：root 与普通用户交替部署时,/tmp 的 sticky 位
-    # 会让后者删不掉前者的目录。COPYFILE_DISABLE 抑制 macOS tar 的 ._* 文件。
-    local rdir="/tmp/sigflow-deploy-$RUSER"
-    COPYFILE_DISABLE=1 tar -C "$stage" -czf "$stage/deploy.tar.gz" deploy
-    note "$(du -h "$stage/deploy.tar.gz" | cut -f1) → $RUSER@$RHOST:$rdir"
-    ssh_do "rm -rf $rdir $rdir.tar.gz"
-    scp_do "$stage/deploy.tar.gz" "$rdir.tar.gz"
-    ssh_do "mkdir -p $rdir && tar -C $rdir --strip-components 1 -xzf $rdir.tar.gz"
-
-    step "远端执行部署（--phase remote）"
     local envfwd="" v
     for v in "${FORWARD_VARS[@]}"; do
         # 未设的变量不转发（图例脚本自带默认）
@@ -532,8 +583,65 @@ deploy_remote() {
     done
     [ -n "${DATA_ROOT_SET:-}" ] && envfwd+="DATA_ROOT='$DATA_ROOT' "
     [ -n "${PYTHON:-}" ] && envfwd+="PYTHON='$PYTHON' "
-    # VAR=v cmd 前缀赋值是 sh/bash 语法，fish 登录 shell 不认——包 sh -c
-    ssh_do "sh -c \"cd $rdir && $envfwd PASSWD='$PASSWD' bash redeploy.sh --phase remote --graph graph.sh\""
+
+    # windows：phase-remote 启动器随船（env 前缀在此烘焙，绕开 ssh→cmd→
+    # bash→powershell 的多层引号转义）。经 Start-Process 分离启动，rc 落
+    # 文件供本机轮询。
+    if [ "$pkgkind" = windows ]; then
+        cat > "$stage/deploy/win-launch.sh" <<EOF
+#!/bin/sh
+# Generated by deploy_remote — do not edit.
+cd "\$(dirname "\$0")"
+$envfwd bash redeploy.sh --phase remote --graph graph.sh > deploy.log 2>&1 < /dev/null
+echo \$? > deploy.rc
+EOF
+    fi
+
+    COPYFILE_DISABLE=1 tar -C "$stage" -czf "$stage/deploy.tar.gz" deploy
+
+    if [ "$pkgkind" = windows ]; then
+        # Windows OpenSSH 的默认 shell 是 cmd：所有远端命令都显式经 Git
+        # Bash 转手。scp 的相对路径落 %USERPROFILE%，恰与 Git Bash 的
+        # $HOME 同一目录（/tmp 两侧含义不同，不能用）；\$HOME 由远端
+        # bash 展开。注意 cmd 在双引号内不吃 &&，但仍会展开 %VAR%——
+        # 转发值里别带百分号。Windows 无 sudo，PASSWD 不转发。
+        local wdir="sigflow-deploy-$RUSER"
+        note "$(du -h "$stage/deploy.tar.gz" | cut -f1) → $RUSER@$RHOST:~/$wdir（Git Bash）"
+        # 旧实例的 shell 以装船目录为 cwd，Windows 下被占用的目录删不
+        # 掉——预清理前先停旧进程（幂等重部署本就要停）
+        ssh_do "\"$RBASH\" -lc \"taskkill //F //IM sigflow-shell.exe > /dev/null 2>&1; sleep 1; rm -rf \$HOME/$wdir \$HOME/$wdir.tar.gz\""
+        scp_do "$stage/deploy.tar.gz" "$wdir.tar.gz"
+        ssh_do "\"$RBASH\" -lc \"mkdir -p \$HOME/$wdir && tar -C \$HOME/$wdir --strip-components 1 -xzf \$HOME/$wdir.tar.gz\""
+
+        step "远端执行部署（--phase remote，Git Bash，分离+轮询）"
+        # 不能同步等：起流的 sigflow-shell 从 msys→原生边界继承 ssh 会话
+        # 的管道句柄（Windows CreateProcess 继承父表全部可继承句柄，Rust
+        # std 不设句柄白名单），通道等不到 EOF，ssh 永挂。也不能 bash 后
+        # 台跑——Windows sshd 会话关闭时连带杀后台进程。唯一活路：经
+        # PowerShell Start-Process（ShellExecute）分离启动 win-launch.sh，
+        # 脱离 ssh 会话进程树；rc 落文件，本机轮询取回。
+        ssh_do "\"$RBASH\" -lc \"cd \$HOME/$wdir && rm -f deploy.rc deploy.log && export BASHEXE='$RBASH' && export WDIR=\$(cygpath -w \$PWD) && powershell.exe -NoProfile -Command 'Start-Process -WindowStyle Hidden -FilePath \$env:BASHEXE -ArgumentList win-launch.sh -WorkingDirectory \$env:WDIR' && echo LAUNCHED\""
+        local i rrc=""
+        for i in $(seq 1 150); do
+            sleep 2
+            rrc="$(ssh_do "\"$RBASH\" -lc \"cat \$HOME/$wdir/deploy.rc 2>/dev/null\"" 2>/dev/null | tr -d '\r' | tail -1)" || true
+            [ -z "$rrc" ] || break
+        done
+        ssh_do "\"$RBASH\" -lc \"tail -n 40 \$HOME/$wdir/deploy.log\"" || true
+        [ "$rrc" = 0 ] || die "远端部署失败（rc=${rrc:-轮询超时}；完整日志：目标机 ~/$wdir/deploy.log）"
+    else
+        # 装船目录按远端用户隔离：root 与普通用户交替部署时,/tmp 的 sticky
+        # 位会让后者删不掉前者的目录。
+        local rdir="/tmp/sigflow-deploy-$RUSER"
+        note "$(du -h "$stage/deploy.tar.gz" | cut -f1) → $RUSER@$RHOST:$rdir"
+        ssh_do "rm -rf $rdir $rdir.tar.gz"
+        scp_do "$stage/deploy.tar.gz" "$rdir.tar.gz"
+        ssh_do "mkdir -p $rdir && tar -C $rdir --strip-components 1 -xzf $rdir.tar.gz"
+
+        step "远端执行部署（--phase remote）"
+        # VAR=v cmd 前缀赋值是 sh/bash 语法，fish 登录 shell 不认——包 sh -c
+        ssh_do "sh -c \"cd $rdir && $envfwd PASSWD='$PASSWD' bash redeploy.sh --phase remote --graph graph.sh\""
+    fi
 
     printf '\n\033[1;32m远程部署完成：%s（%s/%s，图例：%s）\033[0m\n' \
         "$RHOST" "$rarch" "$pkgkind" "$(basename "$GRAPH_SCRIPT")"
@@ -688,6 +796,12 @@ phase_remote() {
         debian)
             priv dpkg -r sigflow 2>/dev/null || note "（未安装，跳过卸载）"
             priv dpkg -i pkg/sigflow_*.deb ;;
+        windows)
+            # 无包管理器：exe 拷到 ~/sigflow（与 install.sh/本地部署同一
+            # 目录约定），本进程 PATH 直接补上
+            mkdir -p "$HOME/sigflow"
+            cp -f pkg/bin/sigflow-shell.exe pkg/bin/sigflow-cli.exe "$HOME/sigflow/"
+            PATH="$HOME/sigflow:$PATH"; export PATH ;;
         *)
             priv install -m755 pkg/bin/sigflow-shell pkg/bin/sigflow-cli /usr/local/bin/ ;;
     esac
@@ -698,11 +812,12 @@ phase_remote() {
     run_precheck_hook "$os"
 
     step "stage python 插件（远端解释器）"
-    PYTHON_BIN="${PYTHON:-$(command -v python3)}"
-    # build.sh 的回退链在插件目录 ../../../ 找 sigflow-plugin-sdk-python；
-    # 装船布局是 <deploy>/plugins-process/<p>/，三级上翻到 /tmp——软链一次
-    # 适配（目标用 REPO_ROOT，装船目录名与用户无关）。
-    ln -sfn "$REPO_ROOT/sigflow-plugin-sdk-python" /tmp/sigflow-plugin-sdk-python \
+    PYTHON_BIN="${PYTHON:-$(command -v python3 || command -v python || true)}"
+    # SDK 定位：显式 env 两种装船布局（/tmp/... 与 ~/sigflow-deploy-*）
+    # 通吃；/tmp 软链是老 build.sh ../../../ 回退链的兼容，windows 布局
+    # 用不上且 Git Bash 无真软链，跳过。
+    export SIGFLOW_PY_SDK="$REPO_ROOT/sigflow-plugin-sdk-python"
+    [ "$os" = windows ] || ln -sfn "$REPO_ROOT/sigflow-plugin-sdk-python" /tmp/sigflow-plugin-sdk-python \
         || die "清不掉旧的 /tmp/sigflow-plugin-sdk-python（他人属主？先用对应用户删除）"
     local p
     for p in plugins-process/*/; do

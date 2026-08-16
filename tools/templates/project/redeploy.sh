@@ -2,6 +2,9 @@
 # redeploy.sh — __PROJECT_NAME__ 部署入口：项目参数默认值 + 转发清单，
 # 机制在公共引擎（../sigflow/deploy/redeploy.sh）。
 #   ./redeploy.sh <graph>                 # 本地部署
+#   ./redeploy.sh <graph> --host H --passwd P  # ssh 远程部署（默认 root；
+#                                              # Windows 目标需装 Git Bash）
+#   ./redeploy.sh <graph> --host H --passwd P --user U   # 普通用户+sudo
 #   ./redeploy.sh <graph> --host H --adb  # Android 设备
 # 项目私货钩子放 deploy/hooks/（precheck.sh / adb-pre-install.sh，见
 # 引擎头注释）。核心源码 checkout（../sigflow-core）由引擎自动探测；
