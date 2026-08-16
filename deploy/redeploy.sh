@@ -818,7 +818,10 @@ phase_remote() {
     # SDK 定位：显式 env 两种装船布局（/tmp/... 与 ~/sigflow-deploy-*）
     # 通吃；/tmp 软链是老 build.sh ../../../ 回退链的兼容，windows 布局
     # 用不上且 Git Bash 无真软链，跳过。
-    export SIGFLOW_PY_SDK="$REPO_ROOT/sigflow-plugin-sdk-python"
+    # 值是 **包目录**（含 sigflow_sdk/*.py）——插件 build.sh 直接
+    # `cp "$SIGFLOW_PY_SDK"/*.py`，新旧脚手架同此约定。装船布局把
+    # sdk/python/ 整个搬进 sigflow-plugin-sdk-python/，故要下潜一层。
+    export SIGFLOW_PY_SDK="$REPO_ROOT/sigflow-plugin-sdk-python/sigflow_sdk"
     [ "$os" = windows ] || ln -sfn "$REPO_ROOT/sigflow-plugin-sdk-python" /tmp/sigflow-plugin-sdk-python \
         || die "清不掉旧的 /tmp/sigflow-plugin-sdk-python（他人属主？先用对应用户删除）"
     local p
