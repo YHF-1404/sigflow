@@ -1,6 +1,8 @@
 # sigflow.ui.heatmap — 2D 热图（定位/成像类可视化）。绑 producer 端口，
-# 期望自描述 f32 帧: [nx, ny, x_bnd_m, y_bnd_m, cell...]（行主序，行 0 =
-# y=-y_bnd，屏幕中心系 y 向上，值 0..1）——knock_localizer.heatmap 的格式。
+# 期望 v2 自描述 f32 帧: [nx, ny, x0_m, y0_m, dx_m, dy_m, screen_w_m,
+# screen_h_m, cell...]（行主序，格 (row,col) 中心 = (x0+col·dx, y0+row·dy)，
+# 屏幕中心系 y 向上、行 0 = 最负 y，值 0..1）——knock_localizer.heatmap /
+# capdaq.viz.cap_heatmap 的格式。可选 6 浮点尾巴 = 敲击精修注解。
 # tap 用帧模式（window_samples=0，事件帧原样透传，不进环缓）。纯 manifest 包。
 name = "sigflow.ui.heatmap"
 version = "0.1.0"
@@ -18,6 +20,12 @@ bindable_to = [{ kind = "port", data_type = "image.heatmap" }]
 [widget.config_schema.show_peak]
 type = "bool"
 default = true
+
+# false（默认）= 最近邻放大，离散传感网格保持清晰；true = 双线性平滑，
+# 定位类连续热斑用。
+[widget.config_schema.smooth]
+type = "bool"
+default = false
 
 [widget.config_schema.label]
 type = "string"
