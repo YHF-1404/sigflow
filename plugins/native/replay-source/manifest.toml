@@ -14,11 +14,31 @@ entry = "sigflow_plugin_create"
 # The original t0/fs/sample_index/ULID ride along in a per-record annotation
 # (replay=true). The query engine stays in the CLI: this node only consumes a
 # ULID list (e.g. `sigflow-cli data ls --json … | jq -r '.[].id'`).
+#
+# Transport: `mode` picks who supplies the beat — the operator (step), the
+# wall clock (play), or nobody (flood, for offline processing). The read head
+# moves freely (step/jog/seek/reset), but the EMITTED stream only ever moves
+# forward: seq/sample_index stay monotonic and every jump opens a new capture
+# (FLAG_DISCONTINUITY + a fresh origin annotation naming the source row), so
+# a downstream sink re-segments instead of being told time went backwards.
 
 [[ports]]
 id = "signal_out"
 direction = "producer"
 # Re-anchored to the host monotonic clock, like any software source.
+semantic_type = { kind = "timeseries.signal", dtype = "f32", clock_domain = "host_monotonic" }
+
+# Read-head telemetry: one 1-channel row per update (≤10 Hz, plus one on every
+# jump) carrying the GLOBAL ROW — one channel on purpose, so a plain
+# numeric_display (whose tap stats aggregate over channels) reads it exactly.
+# Which record / how long / how far through the list rides in the annotation
+# ("replay_p": record_index, records_total, ulid, row_in_record,
+# rows_in_record, global_row, rows_total).
+# A manual stepper is unusable without knowing where it is, and a plugin cannot
+# write back its own params — hence a port rather than a read-only param.
+[[ports]]
+id = "position"
+direction = "producer"
 semantic_type = { kind = "timeseries.signal", dtype = "f32", clock_domain = "host_monotonic" }
 
 # Catalog data root the records live under (records/<shard>/<ulid>/…). Empty
@@ -33,11 +53,89 @@ label = "Data root"
 # The records to replay, in order. Whitespace/comma/newline separated ULIDs.
 # Sourced from the CLI query engine, e.g.
 #   sigflow-cli data ls stream_label=pen0 --json | jq -r '.[].id'
+# Applied at start(): manifests load eagerly (a typo'd ULID refuses loudly),
+# waveforms lazily — change this on a running node and restart processing.
 [[parameters]]
 id = "ulid_list"
 param_type = "string"
 default = { string = "" }
 label = "ULIDs to replay"
+
+# Who supplies the beat:
+#   step  — nothing moves until step_next/step_prev (frame-by-frame review)
+#   play  — the wall clock, at the record's own fs × speed_x (default)
+#   flood — no beat at all: every tick emits as much as the frame buffer and
+#           batch_size allow. For offline processing, where the downstream
+#           node should chew through the recording as fast as it can.
+# Throughput note for flood: the consumer takes ONE frame per tick (~1 kHz),
+# so speed comes from big frames, not frequent ones — keep batch_size large.
+# There is no backpressure in the data plane: if the consumer's tick rate
+# falls behind, its subscriber queue (64 deep on Unix, 8 on Windows) fills and
+# iceoryx2 drops the oldest. Downstream continuity checks (sample_index /
+# gap_samples — the storage sink splits records on a hole) are how a lost
+# frame is caught; verify with tools/replay-verify.sh before trusting a run.
+[[parameters]]
+id = "mode"
+param_type = "enum"
+range = { enum_variants = ["step", "play", "flood"] }
+default = { enum = "play" }
+hot_change = true
+label = "Transport mode"
+
+# Pause/resume for play mode (a param, not an action, so the face SHOWS the
+# state and a script can read it back). Ignored by step/flood.
+[[parameters]]
+id = "playing"
+param_type = "bool"
+default = { bool = true }
+hot_change = true
+label = "Playing (play mode)"
+
+# Playback rate multiplier in play mode: 1 = the record's own fs, 0.25 = slow
+# motion, 10 = ten times real time. NOTE the emitted stream really does arrive
+# at fs × speed_x, so a downstream fs estimator sees the scaled rate; the
+# original fs stays in the origin annotation.
+[[parameters]]
+id = "speed_x"
+param_type = "f64"
+range = { f64_range = { min = 0.05, max = 100.0 } }
+default = { f64 = 1.0 }
+hot_change = true
+label = "Speed ×(play mode)"
+
+# Rows per step_next/step_prev. One row = one sample across all channels (for
+# an array sensor, one full scan) — the natural "frame" for review.
+[[parameters]]
+id = "step_rows"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 65536 } }
+default = { u32 = 1 }
+unit = "rows"
+label = "Rows per step"
+
+# Jog distance in seconds of recorded time (jog_back/jog_fwd), converted with
+# the current record's fs. Unlike step, a jog does not play backwards — it
+# moves the read head and playback continues forward from there.
+[[parameters]]
+id = "jog_s"
+param_type = "f64"
+range = { f64_range = { min = 0.01, max = 3600.0 } }
+default = { f64 = 1.0 }
+unit = "s"
+label = "Jog distance"
+
+# Imperative param: WRITING it seeks to that global row (row 0 of the first
+# record = 0, counting straight through the list). Reading it back gives the
+# last value written, NOT the current position — that lives on the `position`
+# port. Out-of-range clamps to the end.
+[[parameters]]
+id = "seek_row"
+param_type = "u32"
+range = { u32_range = { min = 0, max = 4294967295 } }
+default = { u32 = 0 }
+hot_change = true
+unit = "row"
+label = "Seek to global row (write-only)"
 
 # Re-anchor each frame's t0 to the local monotonic clock (the default and the
 # ratified behaviour — the original capture-machine monotonic t0 is meaningless
@@ -50,8 +148,9 @@ default = { bool = true }
 hot_change = false
 label = "Re-anchor t0 to local monotonic clock"
 
-# Samples per emitted frame (caps real-time catch-up per tick). The output
-# buffer also caps this; whichever is smaller wins.
+# Samples per emitted frame (caps real-time catch-up per tick, and sets the
+# flood-mode chunk). The output buffer also caps this; whichever is smaller
+# wins.
 [[parameters]]
 id = "batch_size"
 param_type = "u32"
@@ -62,10 +161,36 @@ unit = "samples"
 label = "Samples per frame"
 
 # Replay the list forever (re-anchoring on each wrap) instead of going idle
-# when the list is exhausted.
+# when the list is exhausted. Meaningless in step mode (the head just stops
+# at the last row).
 [[parameters]]
 id = "loop_replay"
 param_type = "bool"
 default = { bool = false }
 hot_change = false
 label = "Loop the list forever"
+
+# --- Transport actions (momentary; state lives in the params above) ---------
+
+# Back to the first row of the first record. Also queues one step when the
+# stream is not running free (step mode / paused), so the face shows where it
+# landed instead of keeping the stale frame.
+[[actions]]
+id = "reset"
+label = "Reset to first frame"
+
+[[actions]]
+id = "step_next"
+label = "Step forward (step mode)"
+
+[[actions]]
+id = "step_prev"
+label = "Step back (step mode)"
+
+[[actions]]
+id = "jog_fwd"
+label = "Jog forward jog_s"
+
+[[actions]]
+id = "jog_back"
+label = "Jog back jog_s"
