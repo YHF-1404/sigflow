@@ -170,6 +170,41 @@ pub struct ParameterDescriptor {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub label: Option<String>,
+    /// Conditional relevance: the UI only offers this parameter while **every**
+    /// listed condition holds against the node's current parameter values.
+    /// Absent / empty = always relevant (the default, and what every existing
+    /// manifest means). This is a presentation hint only — the shell still
+    /// accepts writes to a currently-hidden parameter, so a mode switch never
+    /// strands a value.
+    ///
+    /// Declared next to the parameter, e.g. for a plugin whose `command_source`
+    /// picks between a sine generator and waypoint streaming:
+    ///
+    /// ```toml
+    /// [[parameters]]
+    /// id = "wp_vmax"
+    /// param_type = "f64"
+    /// visible_when = [{ param = "command_source", equals = ["waypoint"] }]
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub visible_when: Option<Vec<VisibleWhen>>,
+}
+
+/// One condition of a parameter's [`ParameterDescriptor::visible_when`]: the
+/// parameter is relevant while `param`'s current value is one of `equals`.
+///
+/// Values are compared as strings (the scalar rendered without its type tag),
+/// so an enum variant, `"true"` / `"false"`, and `"2"` all work. A condition
+/// naming a parameter the node does not have is ignored rather than hiding the
+/// control — a typo must not make a knob unreachable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub struct VisibleWhen {
+    /// Id of the parameter this one depends on (typically a mode selector).
+    pub param: String,
+    /// Values of `param` that make this parameter relevant.
+    pub equals: Vec<String>,
 }
 
 fn default_param_range() -> ParamRange {
