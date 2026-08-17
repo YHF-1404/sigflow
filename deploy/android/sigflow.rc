@@ -1,8 +1,10 @@
-# sigflow 整图开机自启（对照同机 /vendor/etc/init/init.cvte_dstserver.rc 的
-# 拉起模式：boot_completed 属性触发 + wait 设备节点）。服务本体是守护脚本
+# sigflow 整图开机自启（Android init service）。服务本体是守护脚本
 # sigflow-boot.sh：重建易失运行环境 → 建图 → 盯根壳体（RPC 9500 监听消失即
 # 整树重建）。非 oneshot——守护脚本本身死了由 init 拉起，形成两级监督。
-# dstserver 的自启已在 vendor rc 里注释停用（sigflow 接管 /dev/aitouch_raw）。
+#
+# 触发用 sys.boot_completed：建图要 /data 可读写、设备节点就绪。"等某个
+# 设备节点出现"这类项目相关的前置条件不写在这里（init 的 wait 会堵住 init
+# 的动作队列），交给守护脚本的项目开机钩子（boot-hook.sh 顶层）。
 #
 # 部署：redeploy.sh --adb 推到 /system/etc/init/sigflow.rc（需 remount，
 # overlayfs scratch 层持久）；init 只在开机解析 rc，改动重启后生效。
@@ -10,7 +12,6 @@
 # 必须有域的要求（rootdaemon 同款做法）。
 
 on property:sys.boot_completed=1
-    wait /dev/aitouch_raw 5
     start sigflow
 
 service sigflow /system/bin/sh /system/bin/sigflow-boot.sh

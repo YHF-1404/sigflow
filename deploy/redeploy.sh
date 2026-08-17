@@ -41,6 +41,13 @@
 #                      （远端）决定要不要干活
 #   adb-pre-install.sh 独立 sh，推到 Android 设备上、装包前执行（清场
 #                      项目残留进程之类）
+#   boot-hook.sh       推到 Android 设备常驻（/data/local/tmp/
+#                      sigflow-boot-hook.sh），开机守护 sigflow-boot.sh
+#                      每次启动 source 一次：顶层语句 = 一次性开机动作，
+#                      可选覆盖 project_tick()（守护每 5s 调，用于常驻
+#                      驯服抢设备的进程）与 project_pre_graph()（每次
+#                      rebuild 建图前调）。项目私货全落这里，守护脚本
+#                      本身保持项目无关
 #
 # Android 模式：packaging/android.sh 出 bionic tarball（bin + native 插件
 # + UI manifest）→ adb push → 设备装插件 → 跑图。python process 插件在
@@ -720,6 +727,14 @@ deploy_adb() {
         note "自启文件已推送（sigflow.rc + sigflow-boot.sh）"
     else
         note "⚠ /system 未 remount——跳过自启文件推送"
+    fi
+
+    # 项目开机钩子：守护脚本每次启动 source（见头部契约）。落 /data/local/tmp
+    # 而非 /system——不依赖 remount，且 adb-pre-install.sh 也能 source 它复用
+    # 同一套清场动作。先于预清场钩子推送，保证后者能读到。
+    if [ -n "$HOOKS_DIR" ] && [ -f "$HOOKS_DIR/boot-hook.sh" ]; then
+        adb -s "$target" push "$HOOKS_DIR/boot-hook.sh" /data/local/tmp/sigflow-boot-hook.sh >/dev/null
+        note "项目开机钩子已推送（boot-hook.sh）"
     fi
 
     # 项目 adb 预清场钩子（装包前在设备上执行）
