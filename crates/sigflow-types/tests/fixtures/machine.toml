@@ -1,0 +1,196 @@
+# 参考文档 —— 双轴台架，配 motor-params.schema.toml。
+#
+# 库在上、机器在下：库随零件号（可跨机器共享），[[nodes.axis]] 随这一台的
+# 机械装配。真实项目建议把这两半拆成两个文件，见 docs/param-doc.md。
+
+schema = "sigflow.example.servo_axis"
+schema_version = 1
+
+# ── 库 ─────────────────────────────────────────────────────────────────
+
+[libraries.motor.dm3510]
+description = "BLDC 三角接法 1 对极，铭牌 12V/0.59A"
+pole_pairs = 1
+winding = "delta"
+r_phase_ohm = 2.57
+l_phase_h = 5.7e-5
+kt_nm_per_a = 0.00315
+rated_current_ma = 590
+rated_torque_mnm = 1.80
+current_loop_bw_hz = 2000.0
+# current_kp_q15 / current_ki_q15 留空 = 用带宽推导（不是 0！）
+fault_current_ma = 770
+fault_debounce_ticks = 4
+
+[libraries.motor.dm4310]
+description = "较大规格，整机用"
+pole_pairs = 1
+winding = "delta"
+r_phase_ohm = 1.20
+l_phase_h = 3.1e-5
+kt_nm_per_a = 0.0072
+rated_current_ma = 1400
+rated_torque_mnm = 10.1
+current_loop_bw_hz = 1500.0
+fault_current_ma = 1800
+fault_debounce_ticks = 4
+
+[libraries.gearbox.pg08m]
+ratio_num = 72
+ratio_den = 1
+max_input_rpm = 25000
+backlash_arcmin = 30.0
+
+[libraries.gearbox.none]
+ratio_num = 1
+ratio_den = 1
+max_input_rpm = 30000
+
+[libraries.encoder.abz1024]
+type = "abz"
+lines = 1024
+counts_per_rev = 4096
+has_index = true
+
+[libraries.driver.hpm6e80evk]
+model = "hpm6e00evk RevC"
+pwm_khz = 80.0
+shunt_mv_per_a = 2000.0
+
+# 工况组：base 是基准，其余继承它，只覆盖有差异的字段。
+[libraries.profile.base]
+description = "基准组"
+vel_kp_ua_per_kcps = 600.0
+vel_ki_na_per_cps = 3.0
+vel_out_limit_ma = 590
+vel_filter_shift = 1
+pos_kp_per_s = 30.0
+pos_p_sat_counts = 4096
+max_torque_permille = 1000
+max_current_permille = 1000
+max_speed_rpm = 25000
+accel_cps2 = 2000000.0
+decel_cps2 = 2000000.0
+following_error_counts = 16384
+following_error_ms = 50
+stall_detect_ms = 150
+
+[libraries.profile.hold]
+extends = "base"
+description = "定位保持。空载静止是 stick-slip 最坏工况"
+max_torque_permille = 400
+accel_cps2 = 500000.0
+decel_cps2 = 500000.0
+
+[libraries.profile.fast]
+extends = "base"
+description = "快速移动"
+vel_kp_ua_per_kcps = 900.0
+accel_cps2 = 4000000.0
+decel_cps2 = 4000000.0
+following_error_counts = 32768
+
+[libraries.profile.compliant]
+extends = "base"
+description = "柔顺接触。碰到东西让步而不是硬顶"
+max_torque_permille = 150
+pos_kp_per_s = 8.0
+vel_kp_ua_per_kcps = 300.0
+following_error_counts = 65536
+following_error_ms = 200
+
+# ── 机器 ───────────────────────────────────────────────────────────────
+
+[nodes.bus]
+cycle_us = 1000
+vbus_mv = 10000
+modulation_max = 0.49
+
+[[nodes.axis]]
+
+  [nodes.axis.identity]
+  name = "s0"
+  index = 0
+  encoder_direction = 1
+
+  [nodes.axis.motor]
+  ref = "dm3510"
+
+  [nodes.axis.gearbox]
+  ref = "pg08m"
+
+  [nodes.axis.encoder]
+  ref = "abz1024"
+
+  [nodes.axis.driver]
+  ref = "hpm6e80evk"
+
+  [nodes.axis.travel]
+  min = -200000.0
+  max = 200000.0
+
+  [nodes.axis.calibration]
+  mode = "z_find"
+  modulation_max = 0.30
+  align_current_ma = 250
+  abort_current_ma = 450
+  settle_max_ms = 3000
+
+  [[nodes.axis.profiles]]
+  ref = "base"
+
+  [[nodes.axis.profiles]]
+  ref = "hold"
+
+  [[nodes.axis.profiles]]
+  ref = "compliant"
+
+  [nodes.axis.default_profile]
+  ref = "hold"
+
+[[nodes.axis]]
+
+  [nodes.axis.identity]
+  name = "s1"
+  index = 1
+  encoder_direction = 1
+
+  # 同型号电机，但这一台绕组实测偏低，只在本轴收紧额定电流。
+  [nodes.axis.motor]
+  ref = "dm3510"
+  [nodes.axis.motor.overrides]
+  rated_current_ma = 540
+
+  [nodes.axis.gearbox]
+  ref = "pg08m"
+
+  [nodes.axis.encoder]
+  ref = "abz1024"
+
+  [nodes.axis.driver]
+  ref = "hpm6e80evk"
+
+  [nodes.axis.travel]
+  min = -200000.0
+  max = 200000.0
+
+  [nodes.axis.calibration]
+  mode = "z_find"
+  modulation_max = 0.30
+  align_current_ma = 250
+  abort_current_ma = 450
+  settle_max_ms = 3000
+
+  [[nodes.axis.profiles]]
+  ref = "base"
+  [nodes.axis.profiles.overrides]
+  vel_out_limit_ma = 540
+
+  # 同理：本轴电机收紧到 540，继承 base 的 590 会越过额定值。
+  [[nodes.axis.profiles]]
+  ref = "fast"
+  [nodes.axis.profiles.overrides]
+  vel_out_limit_ma = 540
+
+  [nodes.axis.default_profile]
+  ref = "base"

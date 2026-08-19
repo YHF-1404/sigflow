@@ -17,15 +17,18 @@ use std::path::PathBuf;
 use ts_rs::TS;
 
 use sigflow_types::frame::FrameHeader;
+use sigflow_types::doc::{DocEdit, EditTarget, Finding, Provenance, ResolvedField};
 use sigflow_types::manifest::{
-    ActionDescriptor, BindableTarget, ConfigField, Direction, ParameterDescriptor, PluginManifest,
-    PluginSource, PortDescriptor, WidgetManifest,
+    ActionDescriptor, BindableTarget, ConfigField, Direction, DocumentDecl, ParameterDescriptor,
+    PluginManifest, PluginSource, PortDescriptor, Presentation, WidgetManifest,
 };
 use sigflow_types::node::{
     Connection, ControlConnection, NodeConfig, NodeDisplay, NodeMeta, NodePosition, ParentPortDecl,
     PluginRef, Viewport,
 };
-use sigflow_types::param::{ControlScalar, ParamRange, ParamType, ParamValue};
+use sigflow_types::param::{
+    ControlScalar, DisplayHint, ParamGuard, ParamRange, ParamType, ParamValue,
+};
 use sigflow_types::plugin::{
     NativeRuntimeConfig, PluginCategory, PluginId, ProcessRuntimeConfig, RuntimeConfig, RuntimeType,
 };
@@ -34,6 +37,11 @@ use sigflow_types::rpc::{
     GetParamResponse, GraphNode, InvokeActionRequest, ListNodesRequest, ListPluginsResponse,
     NodeStateEvent, ParamChangedEvent, PluginInfo, RpcError, RpcMessage, RpcNotification,
     RpcRequest, RpcResponse, SetNodeLayoutRequest, SetParamRequest, SubscribeRequest,
+};
+use sigflow_types::schema::{
+    CollectionDecl, CollectionItem, DocSchema, DocState, DocStatusFile, DocSyncStatus, GroupDecl,
+    LibraryDecl, NodeDecl, ParamGroup, Rule, RuleKind, SectionDecl, Severity, SlotDecl,
+    TargetStatus,
 };
 use sigflow_types::semantic::{BackpressurePolicy, BatchSpec, PayloadSchemaId, SemanticType};
 use sigflow_types::ui::{BindKind, Layout, TapConfig, UiWidget, WidgetBinding};
@@ -66,7 +74,7 @@ fn export_bindings() {
 
     export_all!(&dir;
         // param
-        ParamValue, ParamRange, ParamType, ControlScalar,
+        ParamValue, ParamRange, ParamType, ControlScalar, DisplayHint, ParamGuard,
         // semantic / type system
         SemanticType, PayloadSchemaId, BatchSpec, BackpressurePolicy,
         // ui widgets
@@ -84,6 +92,12 @@ fn export_bindings() {
         // plugin manifest
         PluginManifest, WidgetManifest, BindableTarget, ConfigField, PluginSource,
         Direction, PortDescriptor, ParameterDescriptor, ActionDescriptor,
+        DocumentDecl, Presentation,
+        // configuration documents: schema shape, resolution, validation
+        DocSchema, ParamGroup, SectionDecl, LibraryDecl,
+        NodeDecl, GroupDecl, SlotDecl, CollectionDecl, CollectionItem,
+        Rule, RuleKind, Severity, DocState, DocSyncStatus, TargetStatus, DocStatusFile,
+        Provenance, ResolvedField, Finding, DocEdit, EditTarget,
         // plugin identity / runtime
         PluginId, PluginCategory, RuntimeType, RuntimeConfig, NativeRuntimeConfig, ProcessRuntimeConfig,
         // frame header (data-plane metadata; borrowed Frame<'a> is intentionally not exported)

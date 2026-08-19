@@ -1,0 +1,724 @@
+# 参考 schema —— EtherCAT 伺服轴的参数文档形状。
+#
+# 这份文件是 DocSchema 的可读样例，也是往返测试的输入：它必须能表达
+# dex-hand-ctrl/doc/config/motor-params.toml 里的三层模型（型号库 / 轴装配
+# 实例 / 工况组），而 DocSchema 里一条领域知识都没有。
+#
+# 真实项目里它属于消费文档的那个插件（manifest 的 [[documents]] 指向它），
+# 放在这里是为了让契约层自带一个能跑的例子。
+
+id = "sigflow.example.servo_axis"
+version = 1
+label = "伺服轴参数"
+note = "型号库随零件号，轴随这一台的机械装配，工况组随任务。"
+
+# ═══════════════════════════════════════════════════════════════════════
+#  字段组
+# ═══════════════════════════════════════════════════════════════════════
+
+[[groups]]
+id = "bus"
+label = "总线 / 装置级"
+
+[[groups.fields]]
+id = "cycle_us"
+param_type = "u32"
+range = { u32_range = { min = 125, max = 10000 } }
+default = { u32 = 1000 }
+unit = "us"
+label = "DC SYNC0 周期"
+note = "必须与主站控制环周期一致。"
+
+[[groups.fields]]
+id = "vbus_mv"
+param_type = "u32"
+range = { u32_range = { min = 1000, max = 60000 } }
+default = { u32 = 10000 }
+unit = "mV"
+label = "母线电压"
+note = "属于供电装置不属于驱动板：台架 10V，整机可能 24V。写错的话电压→占空比的标度整体走样，等价于电流环增益走样。"
+
+[[groups.fields]]
+id = "modulation_max"
+param_type = "f64"
+range = { f64_range = { min = 0.1, max = 0.577 } }
+default = { f64 = 0.49 }
+label = "调制度上限"
+note = "V_LIM = vbus_mv × 本项，由从站推导；不要单独下发 V_LIM，会与母线电压不自洽。"
+
+# ── 电机型号 ───────────────────────────────────────────────────────────
+[[groups]]
+id = "motor"
+label = "电机"
+sections = [
+    { id = "electrical", label = "电气", note = "绕组接法为 delta 时铭牌给的是相间值，这里填等效星形每相值（取半）。" },
+    { id = "ratings", label = "额定" },
+    { id = "current_loop", label = "电流环" },
+    { id = "protection", label = "保护", note = "末道硬件保护，任何工况都不该放宽。" },
+]
+
+[[groups.fields]]
+id = "description"
+param_type = "string"
+label = "说明"
+
+[[groups.fields]]
+id = "pole_pairs"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 32 } }
+default = { u32 = 1 }
+section = "electrical"
+label = "极对数"
+note = "当前从站固件硬假设 = 1（电角度索引直接用机械 phcnt）；支持 >1 要先改 ISR 的角度换算。"
+
+[[groups.fields]]
+id = "winding"
+param_type = "enum"
+range = { enum_variants = ["delta", "wye"] }
+default = { enum = "delta" }
+section = "electrical"
+label = "绕组接法"
+
+[[groups.fields]]
+id = "r_phase_ohm"
+param_type = "f64"
+range = { f64_range = { min = 0.001, max = 1000.0 } }
+section = "electrical"
+unit = "ohm"
+label = "每相电阻"
+
+[[groups.fields]]
+id = "l_phase_h"
+param_type = "f64"
+range = { f64_range = { min = 1e-9, max = 1.0 } }
+section = "electrical"
+unit = "H"
+label = "每相电感"
+
+[[groups.fields]]
+id = "kt_nm_per_a"
+param_type = "f64"
+range = { f64_range = { min = 1e-6, max = 100.0 } }
+section = "ratings"
+unit = "Nm/A"
+label = "转矩常数"
+
+[[groups.fields]]
+id = "rated_current_ma"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 100000 } }
+section = "ratings"
+unit = "mA"
+label = "额定电流"
+note = "工况组里那些千分比限值的基准。"
+
+[[groups.fields]]
+id = "rated_torque_mnm"
+param_type = "f64"
+range = { f64_range = { min = 0.001, max = 100000.0 } }
+section = "ratings"
+unit = "mNm"
+label = "额定转矩"
+
+[[groups.fields]]
+id = "current_loop_bw_hz"
+param_type = "f64"
+range = { f64_range = { min = 100.0, max = 20000.0 } }
+default = { f64 = 2000.0 }
+section = "current_loop"
+unit = "Hz"
+label = "电流环带宽"
+note = "下发带宽而不是定点系数：主站不必知道从站的 Q15 格式，将来改 PWM 频率也不用动主站。"
+
+[[groups.fields]]
+id = "current_kp_q15"
+param_type = "u32"
+range = { u32_range = { min = 0, max = 1000000 } }
+section = "current_loop"
+label = "电流环 Kp (Q15)"
+note = "留空 = 用带宽推导。只有需要手工压增益时才填——填了就绕过推导层，改 PWM 频率后不会自动跟随。"
+
+[[groups.fields]]
+id = "current_ki_q15"
+param_type = "u32"
+range = { u32_range = { min = 0, max = 1000000 } }
+section = "current_loop"
+label = "电流环 Ki (Q15)"
+note = "同 Kp：留空 = 推导。"
+
+[[groups.fields]]
+id = "fault_current_ma"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 100000 } }
+section = "protection"
+unit = "mA"
+label = "过流跳闸线"
+guard = "unlock"
+note = "硬件末道保护，不是调参。放宽它等于关掉过流保护。"
+
+[[groups.fields]]
+id = "fault_debounce_ticks"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 64 } }
+default = { u32 = 4 }
+section = "protection"
+unit = "tick"
+label = "过流去抖"
+guard = "confirm"
+note = "按 80kHz 计，4 拍 = 50µs。低感电机单采样尖峰常见，去抖太短会误跳。"
+
+# ── 减速器 ─────────────────────────────────────────────────────────────
+[[groups]]
+id = "gearbox"
+label = "减速器"
+
+[[groups.fields]]
+id = "ratio_num"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 100000 } }
+default = { u32 = 1 }
+label = "减速比分子（电机转数）"
+
+[[groups.fields]]
+id = "ratio_den"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 100000 } }
+default = { u32 = 1 }
+label = "减速比分母（输出轴转数）"
+
+[[groups.fields]]
+id = "max_input_rpm"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 200000 } }
+unit = "rpm"
+label = "最大输入转速"
+note = "传动链最弱环节，通常比电机本身的能力更紧——工况组的限速上界由它定。"
+
+[[groups.fields]]
+id = "backlash_arcmin"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 600.0 } }
+unit = "arcmin"
+label = "齿隙"
+note = "信息用。齿隙是打滑冲击幅度的来源。"
+
+# ── 编码器 ─────────────────────────────────────────────────────────────
+[[groups]]
+id = "encoder"
+label = "编码器"
+
+[[groups.fields]]
+id = "type"
+param_type = "enum"
+range = { enum_variants = ["abz", "biss", "ssi", "hall"] }
+default = { enum = "abz" }
+label = "类型"
+
+[[groups.fields]]
+id = "lines"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 1000000 } }
+label = "线数"
+
+[[groups.fields]]
+id = "counts_per_rev"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 4000000 } }
+unit = "counts"
+label = "每转计数"
+note = "abz 四倍频后 = lines × 4。当前从站把 sin 表尺寸与它硬绑（sin_q15[4096]），改线数要先做 LUT 索引解耦。"
+
+[[groups.fields]]
+id = "has_index"
+param_type = "bool"
+default = { bool = true }
+label = "有 Z 相"
+
+# ── 驱动板（只读铭牌）─────────────────────────────────────────────────
+[[groups]]
+id = "driver"
+label = "驱动板"
+note = "板级参数（PWM/FOC 频率、死区、电流采样系数）固化在从站固件里，刻意不开下发通道——写错采样系数会让过流保护同步失效。这里只记录装的是哪一块。"
+
+[[groups.fields]]
+id = "model"
+param_type = "string"
+label = "型号"
+
+[[groups.fields]]
+id = "pwm_khz"
+param_type = "f64"
+range = { f64_range = { min = 1.0, max = 200.0 } }
+unit = "kHz"
+label = "PWM 频率"
+editable = false
+editable_reason = "由驱动板固件决定，记录用"
+
+[[groups.fields]]
+id = "shunt_mv_per_a"
+param_type = "f64"
+range = { f64_range = { min = 1.0, max = 100000.0 } }
+unit = "mV/A"
+label = "电流采样系数"
+editable = false
+editable_reason = "由驱动板硬件决定，记录用"
+
+# ── 轴身份 ─────────────────────────────────────────────────────────────
+[[groups]]
+id = "axis_identity"
+label = "轴"
+
+[[groups.fields]]
+id = "name"
+param_type = "string"
+label = "名称"
+
+[[groups.fields]]
+id = "index"
+param_type = "u32"
+range = { u32_range = { min = 0, max = 63 } }
+label = "从站序号"
+note = "环上的物理位置，必须连续、从 0 起、不重复。"
+
+[[groups.fields]]
+id = "encoder_direction"
+param_type = "i32"
+range = { i32_range = { min = -1, max = 1 } }
+default = { i32 = 1 }
+label = "编码器计数方向"
+note = "+1 = 编码器增计数方向与电角度前进方向一致。接反了当前只能改接线。"
+
+# ── 行程（机械安全）────────────────────────────────────────────────────
+[[groups]]
+id = "travel"
+label = "行程软限位"
+note = "机械安全，属于轴不属于工况：工况可以更保守地收紧，但不该定义它。关节有硬止挡——上手前务必按实际行程配窄。"
+
+[[groups.fields]]
+id = "min"
+param_type = "f64"
+range = { f64_range = { min = -1e9, max = 1e9 } }
+unit = "counts"
+label = "下限"
+guard = "unlock"
+
+[[groups.fields]]
+id = "max"
+param_type = "f64"
+range = { f64_range = { min = -1e9, max = 1e9 } }
+unit = "counts"
+label = "上限"
+guard = "unlock"
+
+# ── 标定序列 ───────────────────────────────────────────────────────────
+[[groups]]
+id = "calibration"
+label = "电角度标定"
+note = "只在使能前跑，跑起来就不碰。数值随负载惯量和电机额定电流变，换电机要跟着改。"
+
+[[groups.fields]]
+id = "mode"
+param_type = "enum"
+range = { enum_variants = ["z_find", "full"] }
+default = { enum = "z_find" }
+label = "标定模式"
+note = "z_find = 有保存值时开环找 Z 快速启动；full = 每次完整电流对齐。"
+
+[[groups.fields]]
+id = "modulation_max"
+param_type = "f64"
+range = { f64_range = { min = 0.001, max = 0.99 } }
+default = { f64 = 0.30 }
+label = "标定期调制度上限"
+
+[[groups.fields]]
+id = "align_current_ma"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 100000 } }
+unit = "mA"
+label = "对齐注入电流"
+
+[[groups.fields]]
+id = "abort_current_ma"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 100000 } }
+unit = "mA"
+label = "标定期中止线"
+note = "应低于正式跳闸线。"
+
+[[groups.fields]]
+id = "settle_max_ms"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 60000 } }
+default = { u32 = 3000 }
+unit = "ms"
+label = "等停稳上限"
+
+# ── 工况组 ─────────────────────────────────────────────────────────────
+[[groups]]
+id = "profile"
+label = "工况组"
+note = "收录标准：运行中改是安全的（不改坐标系、不改定点标度），且不同任务确实需要不同的值。因此过流跳闸线、软限位、电流环增益、标定参数都不在这里。"
+sections = [
+    { id = "vel", label = "速度环 (8kHz)" },
+    { id = "pos", label = "位置环 (1kHz)" },
+    { id = "limits", label = "限值" },
+    { id = "protect", label = "保护判据" },
+]
+
+[[groups.fields]]
+id = "description"
+param_type = "string"
+label = "说明"
+
+[[groups.fields]]
+id = "vel_kp_ua_per_kcps"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 1000000.0 } }
+recommended = { f64_range = { min = 100.0, max = 900.0 } }
+section = "vel"
+unit = "uA/kcps"
+label = "速度环 Kp"
+note = "粘性阻尼项，抑制 stick-slip 要动的就是它。台架实测：1200（穿越 ~200Hz）明显容易振荡，600 稳——纸面上对滤波极点还有 4.4x 裕量却已起振，真正的限制在减速器柔性/齿隙这类未建模环节。"
+
+[[groups.fields]]
+id = "vel_ki_na_per_cps"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 1000000.0 } }
+section = "vel"
+unit = "nA/cps/拍"
+label = "速度环 Ki"
+note = "每拍积分增量：决定抗静摩擦爬升速率，也决定极限环周期。"
+
+[[groups.fields]]
+id = "vel_out_limit_ma"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 100000 } }
+section = "vel"
+unit = "mA"
+label = "速度环输出限幅"
+note = "同时是积分器抗饱和边界。不能超过电机额定电流。"
+
+[[groups.fields]]
+id = "vel_filter_shift"
+param_type = "u32"
+range = { u32_range = { min = 0, max = 8 } }
+default = { u32 = 1 }
+section = "vel"
+unit = "位"
+label = "速度反馈滤波移位"
+note = "IIR: y += (x-y)>>n。1 → 极点 882Hz，2 → 366Hz。与 Kp 强耦合，必须能和它一起原子改。"
+
+[[groups.fields]]
+id = "pos_kp_per_s"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 100000.0 } }
+section = "pos"
+unit = "1/s"
+label = "位置环 Kp"
+note = "这是刚度不是阻尼——提它会让 stick-slip 更凶，不要拿它治振动。"
+
+[[groups.fields]]
+id = "pos_p_sat_counts"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 1000000 } }
+default = { u32 = 4096 }
+section = "pos"
+unit = "counts"
+label = "位置环 P 项饱和"
+note = "只钳纠偏项不钳前馈；决定卡死解除后的归位速率。"
+
+[[groups.fields]]
+id = "max_torque_permille"
+param_type = "u32"
+range = { u32_range = { min = 0, max = 1000 } }
+default = { u32 = 1000 }
+section = "limits"
+unit = "‰"
+label = "最大转矩"
+display = { unit = "%", scale = 0.1, decimals = 1 }
+
+[[groups.fields]]
+id = "max_current_permille"
+param_type = "u32"
+range = { u32_range = { min = 0, max = 1000 } }
+default = { u32 = 1000 }
+section = "limits"
+unit = "‰"
+label = "最大电流"
+display = { unit = "%", scale = 0.1, decimals = 1 }
+
+[[groups.fields]]
+id = "max_speed_rpm"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 1000000 } }
+section = "limits"
+unit = "rpm"
+label = "最大转速"
+note = "上界由减速器的最大输入转速定。"
+
+[[groups.fields]]
+id = "accel_cps2"
+param_type = "f64"
+range = { f64_range = { min = 1.0, max = 2e9 } }
+section = "limits"
+unit = "counts/s^2"
+label = "加速斜坡"
+
+[[groups.fields]]
+id = "decel_cps2"
+param_type = "f64"
+range = { f64_range = { min = 1.0, max = 2e9 } }
+section = "limits"
+unit = "counts/s^2"
+label = "减速斜坡"
+
+[[groups.fields]]
+id = "following_error_counts"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 1000000000 } }
+section = "protect"
+unit = "counts"
+label = "跟随误差窗"
+note = "柔顺工况让步就是误差大，判据必须跟着放宽，否则一接触就报 0x8611。"
+
+[[groups.fields]]
+id = "following_error_ms"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 60000 } }
+default = { u32 = 50 }
+section = "protect"
+unit = "ms"
+label = "跟随误差超时"
+
+[[groups.fields]]
+id = "stall_detect_ms"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 60000 } }
+default = { u32 = 150 }
+section = "protect"
+unit = "ms"
+label = "堵转判据时长"
+
+# ── 设备回读（不落文档）───────────────────────────────────────────────
+[[groups]]
+id = "readback"
+label = "设备回读"
+note = "这些值不在文档里，由插件从设备取——推导层不可见就是黑盒。"
+
+[[groups.fields]]
+id = "config_state"
+param_type = "string"
+label = "配置状态"
+readback = true
+editable = false
+
+[[groups.fields]]
+id = "active_profile"
+param_type = "u32"
+label = "当前生效工况组"
+readback = true
+editable = false
+
+[[groups.fields]]
+id = "derived_current_kp"
+param_type = "u32"
+label = "推导的电流环 Kp"
+readback = true
+editable = false
+note = "下发带宽后从站按 Kp = Ls·ω 算出来的值，回读比对用。"
+
+# ═══════════════════════════════════════════════════════════════════════
+#  库
+# ═══════════════════════════════════════════════════════════════════════
+
+[[libraries]]
+id = "motor"
+group = "motor"
+label = "电机型号"
+
+[[libraries]]
+id = "gearbox"
+group = "gearbox"
+label = "减速器"
+
+[[libraries]]
+id = "encoder"
+group = "encoder"
+label = "编码器"
+
+[[libraries]]
+id = "driver"
+group = "driver"
+label = "驱动板"
+
+[[libraries]]
+id = "profile"
+group = "profile"
+label = "工况组"
+inheritable = true
+
+# ═══════════════════════════════════════════════════════════════════════
+#  文档树
+# ═══════════════════════════════════════════════════════════════════════
+
+[[root]]
+kind = "group"
+id = "bus"
+group = "bus"
+label = "装置"
+
+[[root]]
+kind = "collection"
+id = "axis"
+label = "轴"
+key = "identity/name"
+min = 1
+max = 8
+
+[root.item]
+kind = "instance"
+
+[[root.item.children]]
+kind = "group"
+id = "identity"
+group = "axis_identity"
+label = "身份"
+
+[[root.item.children]]
+kind = "slot"
+id = "motor"
+library = "motor"
+label = "电机"
+allow_override = true
+
+[[root.item.children]]
+kind = "slot"
+id = "gearbox"
+library = "gearbox"
+label = "减速器"
+
+[[root.item.children]]
+kind = "slot"
+id = "encoder"
+library = "encoder"
+label = "编码器"
+
+[[root.item.children]]
+kind = "slot"
+id = "driver"
+library = "driver"
+label = "驱动板"
+nameplate = true
+
+[[root.item.children]]
+kind = "group"
+id = "travel"
+group = "travel"
+label = "行程"
+
+[[root.item.children]]
+kind = "group"
+id = "calibration"
+group = "calibration"
+label = "标定"
+
+[[root.item.children]]
+kind = "collection"
+id = "profiles"
+label = "工况"
+min = 1
+max = 8
+
+[root.item.children.item]
+kind = "ref"
+library = "profile"
+allow_override = true
+
+[[root.item.children]]
+kind = "slot"
+id = "default_profile"
+library = "profile"
+label = "默认工况"
+
+# 设备回读：不落文档，由下发插件写进状态边车（status_file）后由 doc_get 带回。
+[[root.item.children]]
+kind = "group"
+id = "status"
+group = "readback"
+label = "设备状态"
+
+# ═══════════════════════════════════════════════════════════════════════
+#  跨字段规则
+# ═══════════════════════════════════════════════════════════════════════
+
+[[rules]]
+id = "speed_within_gearbox"
+scope = "axis"
+rule = "le"
+left = "profiles/*/max_speed_rpm"
+right = "gearbox/max_input_rpm"
+severity = "error"
+message = "工况限速 {left} rpm 超过减速器允许的最大输入转速 {right} rpm"
+
+[[rules]]
+id = "vel_limit_within_rating"
+scope = "axis"
+rule = "le"
+left = "profiles/*/vel_out_limit_ma"
+right = "motor/rated_current_ma"
+severity = "error"
+message = "速度环输出限幅 {left} mA 超过电机额定电流 {right} mA"
+
+[[rules]]
+id = "abort_below_trip"
+scope = "axis"
+rule = "le"
+left = "calibration/abort_current_ma"
+right = "motor/fault_current_ma"
+severity = "error"
+message = "标定期中止线 {left} mA 应低于过流跳闸线 {right} mA，否则标定会先跳闸"
+
+[[rules]]
+id = "travel_ordered"
+scope = "axis"
+rule = "le"
+left = "travel/min"
+right = "travel/max"
+severity = "error"
+message = "行程下限 {left} 必须小于上限 {right}"
+
+# 作用域在轴内，但要跟装置级的调制度比——路径以 / 开头 = 从文档根算起。
+[[rules]]
+id = "cal_modulation_within_bus"
+scope = "axis"
+rule = "le"
+left = "calibration/modulation_max"
+right = "/bus/modulation_max"
+severity = "warn"
+message = "标定期调制度 {left} 高于闭环上限 {right}——标定是开环的，通常应更保守"
+
+[[rules]]
+id = "axis_index_dense"
+rule = "dense_index"
+collection = "axis"
+field = "identity/index"
+severity = "error"
+message = "从站序号必须连续、从 0 起、不重复"
+
+[[rules]]
+id = "axis_name_unique"
+rule = "unique"
+collection = "axis"
+field = "identity/name"
+severity = "error"
+message = "轴名重复"
+
+[[rules]]
+id = "default_profile_downloaded"
+scope = "axis"
+rule = "member_of"
+slot = "default_profile"
+collection = "profiles"
+severity = "error"
+message = "默认工况必须是本轴下发的工况之一"

@@ -51,7 +51,8 @@ pub struct WidgetBinding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub node: Option<String>,
-    /// Param id, port id, action id, or empty string for `State`.
+    /// Param id, port id, action id, document id, or empty string for
+    /// `State` / `Logs`.
     pub target: String,
     /// Only meaningful when `kind == Port` — tap subscription config.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -70,6 +71,11 @@ pub enum BindKind {
     /// The node's log stream (`node.log`), read over `get_logs`. Like `State`
     /// it addresses the node as a whole, so `target` is empty.
     Logs,
+    /// A configuration document the node's plugin declares
+    /// (`PluginManifest::documents`); `target` is the document id. Unlike a
+    /// param binding, what the widget receives is a schema plus a tree, not
+    /// one scalar.
+    Doc,
 }
 
 impl BindKind {
@@ -80,6 +86,7 @@ impl BindKind {
             BindKind::State => "state",
             BindKind::Action => "action",
             BindKind::Logs => "logs",
+            BindKind::Doc => "doc",
         }
     }
 
