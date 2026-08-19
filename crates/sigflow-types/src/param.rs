@@ -52,3 +52,47 @@ pub struct ControlScalar {
     pub seq: u64,
     pub value: f64,
 }
+
+/// How a value is shown to a human, when the wire unit is not the unit anyone
+/// thinks in.
+///
+/// The conversion is deliberately affine and self-contained
+/// (`shown = stored * scale`): a conversion that needs *another* field —
+/// counts to rpm needs the encoder's counts-per-rev — is not expressible
+/// here, and should not be faked. Those belong in a derived read-out, or in
+/// `note` until there is one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub struct DisplayHint {
+    /// Unit shown next to the field, overriding `ParameterDescriptor::unit`
+    /// (which stays the wire unit — the one the device actually receives).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub unit: Option<String>,
+    /// `shown = stored * scale`. Per-mille rendered as a percentage: `0.1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub scale: Option<f64>,
+    /// Decimal places for display; the stored value keeps full precision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub decimals: Option<u32>,
+}
+
+/// Friction deliberately placed in front of a field whose wrong value breaks
+/// something expensive.
+///
+/// This is not the same axis as `editable`. An over-current trip level is
+/// fully editable and must stay so — it is simply not a knob anyone should
+/// turn while sweeping gains, and the machine-safety fields sitting next to
+/// the tuning fields is exactly how they get turned by accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub enum ParamGuard {
+    /// Editing prompts for confirmation, quoting the field's `note`.
+    Confirm,
+    /// The field renders locked until explicitly unlocked, per editing
+    /// session. For protection limits and mechanical travel.
+    Unlock,
+}

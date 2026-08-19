@@ -567,6 +567,17 @@ deploy_remote() {
         cp "$tdir/$target/release/$lib" "$stage/deploy/plugins-native/$p/"
         sed "s|^library = \".*\"|library = \"$lib\"|" "$pdir/manifest.toml" \
             > "$stage/deploy/plugins-native/$p/manifest.toml"
+        # manifest 声明的包内资源（[[documents]].schema_file 等）也得上船：
+        # 壳体是从安装目录读它们的，只装 manifest + 动态库的话，插件到了目标
+        # 机就少一半——而且少的那半只有点开编辑器才发现。
+        for asset in $(sed -n 's/^[[:space:]]*schema_file[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' \
+                       "$pdir/manifest.toml"); do
+            case "$asset" in
+                */*|"") die "插件 $p 的 schema_file 必须是包内的纯文件名：$asset" ;;
+            esac
+            [ -f "$pdir/$asset" ] || die "插件 $p 的 manifest 声明了 $asset，但包里没有"
+            cp "$pdir/$asset" "$stage/deploy/plugins-native/$p/"
+        done
     done
     # python 插件：源码 + SDK 上船，build.sh 在远端跑（烙远端解释器 + 依赖检查）
     for p in "${PROCESS_PLUGINS[@]:+${PROCESS_PLUGINS[@]}}"; do

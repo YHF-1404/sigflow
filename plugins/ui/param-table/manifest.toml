@@ -1,0 +1,65 @@
+# sigflow.ui.param_table — 结构化参数文档编辑器（树 + 表单 + 对比表）。
+#
+# 绑一份文档（bind kind = "doc"，target = 插件 manifest 里 [[documents]] 的
+# id）。控件本身不认识任何领域概念：树的形状、表单的字段、单位、推荐区间、
+# 跨字段规则，全部来自那份文档的 DocSchema —— 电机参数、称重标定、工艺配方
+# 用的是同一个控件。
+#
+# 三个区各自编辑的东西不同，这是用这个控件前要先分清的：
+#   左树   实例层级与槽位。集合可增删（几个轴、几个工况），
+#          槽位不可增删（轴有电机是 schema 说的，不是用户偏好）。
+#   顶栏   这个槽位引用库里的哪一条 + 增删改条目 + 编辑目标切换
+#          （改型号库 = 影响所有引用它的实例 / 仅本实例覆盖），
+#          右侧是下发生命周期：草稿→已保存→设备影子→已生效→已存盘。
+#   表单   字段值。每行带来源徽标（库/继承/覆盖/设备回读）、
+#          越界与超出实测推荐区间的提示、字段旁注。
+#
+# presentation = "page"：树+表单+对比表三栏不缩得进画布上的节点脸，宿主按
+# 整页渲染，节点脸上只留入口。
+#
+# 纯 manifest 包：壳体只读声明做绑定校验，前端负责渲染；[runtime] 是 schema
+# 必填项，widget.json 只是占位内容，永远不会被加载。
+name = "sigflow.ui.param_table"
+version = "0.1.0"
+category = "ui_widget"
+
+[runtime]
+type = "native"
+library = "widget.json"
+entry = "unused"
+
+[widget]
+widget_type = "param_table"
+presentation = "page"
+bindable_to = [{ kind = "doc" }]
+
+[widget.config_schema.label]
+type = "string"
+
+# 打开时的默认视图。table = 行是字段、列是兄弟实例/工况的对比表 ——
+# 多轴场合"哪个字段不一样""把 s0 抄给 s1"是日常操作，表比表单更常用。
+[widget.config_schema.default_view]
+type = "enum"
+enum_values = ["form", "table"]
+default = "form"
+
+# 字段旁注（schema 里 note 那一栏：为什么是这个值、台架实测到过什么）。
+# 默认开——这些知识原本只活在配置文件的注释里，只有作者读得到。
+[widget.config_schema.show_notes]
+type = "bool"
+default = true
+
+# 只显示当前有覆盖/与库不同的字段。整定回合里"我到底动过哪些"用。
+[widget.config_schema.changes_only]
+type = "bool"
+default = false
+
+# 下发/存盘按钮绑的插件 action id。控件不假设它们叫什么——下发时序、提交、
+# CRC 比对全在消费文档的那个插件里，这里只负责把按钮接上去。留空 = 不显示
+# 该按钮。设备侧的结果走 [[documents]] 的 status_file 边车回来。
+[widget.config_schema.download_action]
+type = "string"
+
+[widget.config_schema.store_action]
+type = "string"
+
