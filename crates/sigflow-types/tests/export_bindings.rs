@@ -39,7 +39,8 @@ use sigflow_types::rpc::{
     RpcRequest, RpcResponse, SetNodeLayoutRequest, SetParamRequest, SubscribeRequest,
 };
 use sigflow_types::schema::{
-    CollectionDecl, CollectionItem, DocSchema, DocState, DocStatusFile, DocSyncStatus, GroupDecl,
+    ActiveDecl, CollectionDecl, CollectionItem, DocSchema, DocState, DocStatusFile, DocSyncStatus,
+    GroupDecl,
     LibraryDecl, NodeDecl, ParamGroup, Rule, RuleKind, SectionDecl, Severity, SlotDecl,
     TargetStatus,
 };
@@ -95,7 +96,7 @@ fn export_bindings() {
         DocumentDecl, Presentation,
         // configuration documents: schema shape, resolution, validation
         DocSchema, ParamGroup, SectionDecl, LibraryDecl,
-        NodeDecl, GroupDecl, SlotDecl, CollectionDecl, CollectionItem,
+        NodeDecl, GroupDecl, SlotDecl, CollectionDecl, CollectionItem, ActiveDecl,
         Rule, RuleKind, Severity, DocState, DocSyncStatus, TargetStatus, DocStatusFile,
         Provenance, ResolvedField, Finding, DocEdit, EditTarget,
         // plugin identity / runtime
