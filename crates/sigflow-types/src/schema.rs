@@ -282,6 +282,41 @@ pub struct CollectionDecl {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub max: Option<u32>,
+    /// Which item the device is actually running, when the items are
+    /// alternatives rather than parts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub active: Option<ActiveDecl>,
+}
+
+/// Where a collection's *live* item is reported, and how to change it.
+///
+/// A collection of alternatives — operating conditions, gain sets, recipes —
+/// has exactly one item the device is running, and editing any of the others
+/// is a legitimate thing to do that produces no visible effect. Without this
+/// declaration the editor cannot tell the two apart, so a download onto a
+/// group nobody is running looks exactly like a download that did nothing:
+/// every light green, no change in behaviour, and the only way out is to
+/// suspect it and go check. Declaring it turns that into a sentence on
+/// screen next to the values being edited.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub struct ActiveDecl {
+    /// Path of the readback field naming the live item, relative to the
+    /// collection's *parent* — `device/active_profile` for a `profiles`
+    /// collection sitting beside a `device` group. A numeric value is a
+    /// position in the collection; a string is the item's key.
+    pub readback: String,
+    /// Node parameter that selects the item, taking the item's key. Absent =
+    /// the editor reports which item is live but cannot switch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub param: Option<String>,
+    /// Value of `param` meaning "whatever the document says". Absent = no
+    /// such value exists and the editor offers no way back to the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub follow: Option<String>,
 }
 
 /// What one item of a [`CollectionDecl`] is.
@@ -426,7 +461,16 @@ pub struct DocStatusFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub at: Option<String>,
-    pub sync: DocSyncStatus,
+    /// The download lifecycle, when the plugin has anything to say about it.
+    ///
+    /// Optional because device state and download state are not the same
+    /// thing: a plugin that is only reporting *which* of a document's
+    /// alternatives the hardware is currently running has said something
+    /// true and useful without having downloaded anything this session.
+    /// Requiring a lifecycle here would force it to invent one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub sync: Option<DocSyncStatus>,
     /// Values for fields the schema marks `readback`, keyed by document path
     /// then field id — `{"axis/0/status": {"config_state": "…"}}`.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
