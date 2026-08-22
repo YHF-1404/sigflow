@@ -208,6 +208,190 @@ pub struct PortDescriptor {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub max_subscribers: Option<u32>,
+    /// 列契约：交织口里每一列是什么、怎么读（见 [`ColumnDecl`]）。空 = 没
+    /// 声明，消费方只能按下标猜、按曲线画。
+    ///
+    /// 空也照样序列化成 `[]`（不 skip）：前端类型里它是必填项，让 JSON
+    /// 和类型说一样的话；只有认不得这个字段的老 shell 会整个不发——前端
+    /// 读的时候仍按「可能没有」兜底。
+    #[serde(default)]
+    pub columns: Vec<ColumnDecl>,
+    /// `columns` 描述的是**一组**；组按从站/通道重复时在这里说（见
+    /// [`ColumnGroups`]）。None = 只有一组，总列数 = `columns.len()`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub column_groups: Option<ColumnGroups>,
+}
+
+/// 列契约：一个多列交织口里，某一列是什么、怎么读。
+///
+/// 没有它，列只活在 manifest 注释和页面脚本的 `labels=` 串里。画曲线够用
+/// ——曲线不在乎一列是什么——状态控件不够：状态字是枚举不是量，把它画
+/// 成曲线会在两个状态之间画一条穿过不存在状态的斜线；跟随误差要画在窗
+/// 旁边才有意义，而窗是多少只有生产数据的那一方知道。所以**谁生产数据，
+/// 谁声明它怎么读**；控件只认 `kind`，不认识 CiA402。
+///
+/// 约定：**NaN = 本拍不适用**（闭环没跑时的 d/q 电流、老固件没有的列）。
+/// 一个「不适用」的零和一个「确实为零」的零长得一模一样；NaN 让控件置灰、
+/// 曲线断开，而不是画一个谁也分不清的 0。
+///
+/// ```toml
+/// [[ports]]
+/// id = "status"
+/// direction = "producer"
+/// semantic_type = { kind = "timeseries.signal", dtype = "f32" }
+/// column_groups = { repeat_by = "slaves", label = "s{i}" }
+///
+/// [[ports.columns]]
+/// id = "sw"
+/// label = "状态字"
+/// kind = "enum"
+/// decode = [
+///   { mask = 0x6f, value = 0x27, name = "Operation enabled", tone = "good" },
+///   { mask = 0x6f, value = 0x23, name = "Switched on" },
+///   { mask = 0x4f, value = 0x08, name = "Fault", tone = "crit" },
+/// ]
+/// bits = [ { bit = 11, name = "限幅", tone = "warn" }, { bit = 3, name = "故障", tone = "crit" } ]
+///
+/// [[ports.columns]]
+/// id = "ferr"
+/// label = "跟随误差"
+/// unit = "counts"
+/// kind = "bounded"
+/// bound = { max = { column = "ferr_lim" }, bipolar = true }
+///
+/// [[ports.columns]]
+/// id = "dropouts"
+/// kind = "counter"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub struct ColumnDecl {
+    /// 组内唯一；控件配置里按它选列（`column = "ferr"`），不按下标。
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub unit: Option<String>,
+    /// 默认读法——决定控件推断（曲线 / 徽章 / 灯 / 计数卡 / 量表）。
+    #[serde(default)]
+    pub kind: ColumnKind,
+    /// 枚举解码：按声明顺序逐条试 `(round(v) & mask) == value`，先中先赢；
+    /// 一条都不中显示原值。`kind = enum` 的主读法；别的 kind 也可以带。
+    #[serde(default)]
+    pub decode: Vec<EnumCase>,
+    /// 位名：`kind = bitfield` 的主读法；一个状态字可以同时带 `decode`
+    /// （状态机位）和 `bits`（标志位），两种控件各取所需。
+    #[serde(default)]
+    pub bits: Vec<BitDecl>,
+    /// 界：`kind = bounded` 时量表把它画在值旁边。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub bound: Option<Bound>,
+}
+
+/// 一列的默认读法。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub enum ColumnKind {
+    /// 连续量：画曲线。
+    #[default]
+    Signal,
+    /// 枚举码：值本身没有大小意义，只有「是哪一个」。
+    Enum,
+    /// 位域：每一位独立成立。
+    Bitfield,
+    /// 单调计数：有意义的是增量和速率，不是绝对值。
+    Counter,
+    /// 有界连续量：离界多远比值本身重要。
+    Bounded,
+}
+
+/// 语义色。与控件自己的强调色无关——good/warn/crit 说的是**事**的状态。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub enum Tone {
+    #[default]
+    Neutral,
+    Good,
+    Warn,
+    Crit,
+    /// 灰：关着、不在、不适用。
+    Off,
+}
+
+/// 枚举解码的一条：`(round(v) & mask) == value`。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub struct EnumCase {
+    /// 缺省 = 全 1（整值相等）。CiA402 状态机位那种「看低 7 位」用 0x6f；
+    /// `mask = 0` 匹配一切——放在最后当兜底（「其它」）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub mask: Option<u32>,
+    pub value: u32,
+    pub name: String,
+    #[serde(default)]
+    pub tone: Tone,
+}
+
+/// 位域里的一位。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub struct BitDecl {
+    pub bit: u8,
+    pub name: String,
+    /// 该位为 1 时的语义色（为 0 时一律灰）。
+    #[serde(default)]
+    pub tone: Tone,
+}
+
+/// 有界量的界。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub struct Bound {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub max: Option<BoundRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub min: Option<BoundRef>,
+    /// 双极：界对 |v| 生效，零居中画；`min` 缺省取 `-max`。
+    #[serde(default)]
+    pub bipolar: bool,
+}
+
+/// 界从哪来：一个常数，或同组里另一列——生效的界只有生产方知道（驱动器
+/// 里现在是多少、换工况之后是多少），让它每拍发布出来，控件就永远画的是
+/// 真值，而不是页面脚本里某次手填的 4096。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub enum BoundRef {
+    Value(f64),
+    Column { column: String },
+}
+
+/// 列组重复：`columns` 描述一组，整组按从站/通道重复，列 = 组序 × 组内序
+/// （组序在外、列序在内，与 cia402-csx 遥测口一致）。
+///
+/// 组数不在这里声明——运行时由帧的通道数除以组内列数得出，帧永远是对的，
+/// 参数值只是它的来历。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub struct ColumnGroups {
+    /// 组数来自哪个参数（如 `slaves`）。只为说明来历，消费方不靠它算。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub repeat_by: Option<String>,
+    /// 组名模板，`{i}` = 组序号（0 起）。缺省 `"{i}"`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub label: Option<String>,
 }
 
 /// Declares a tunable parameter on a plugin.
