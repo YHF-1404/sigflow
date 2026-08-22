@@ -1,0 +1,34 @@
+# sigflow.ui.counter — 单调计数的卡：值 + 最近 window_s 秒的增量 + 上次变化
+# 距今。一个只涨的数字分不开"老伤稳定"和"正在恶化"——59 (+0 / 10 min) 和
+# 59 (+41 / 7 min) 是两个世界。逐样本扫，任何一次 +1 都不会因刷新率漏掉。
+# bad_when_growing = false 给"走点完成"这类越涨越好的计数。纯 manifest 包。
+name = "sigflow.ui.counter"
+version = "0.1.0"
+category = "ui_widget"
+
+[runtime]
+type = "native"
+library = "widget.json"
+entry = "unused"
+
+[widget]
+widget_type = "counter"
+bindable_to = [{ kind = "port" }]
+
+[widget.config_schema.column]
+type = "string"
+
+[widget.config_schema.group]
+type = "u32"
+default = 0
+
+[widget.config_schema.label]
+type = "string"
+
+[widget.config_schema.window_s]
+type = "f64"
+default = 60.0
+
+[widget.config_schema.bad_when_growing]
+type = "bool"
+default = true

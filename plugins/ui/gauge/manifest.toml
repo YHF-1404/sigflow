@@ -1,0 +1,50 @@
+# sigflow.ui.gauge — 有界量的量表：把界画在值旁边。绑 producer 口的一列
+# （column = 列契约里的 id 或下标，group = 第几组/从站）。界缺省来自列契约
+# 的 bound（常数或同组另一列的当前值——生效的界只有生产方知道），min/max/
+# bipolar 只做覆盖。NaN = 不适用，整条置灰不画 0。峰值保持 peak_s 秒。
+# 纯 manifest 包。
+name = "sigflow.ui.gauge"
+version = "0.1.0"
+category = "ui_widget"
+
+[runtime]
+type = "native"
+library = "widget.json"
+entry = "unused"
+
+[widget]
+widget_type = "gauge"
+bindable_to = [{ kind = "port" }]
+
+[widget.config_schema.column]
+type = "string"
+
+[widget.config_schema.group]
+type = "u32"
+default = 0
+
+[widget.config_schema.label]
+type = "string"
+
+[widget.config_schema.min]
+type = "f64"
+
+[widget.config_schema.max]
+type = "f64"
+
+[widget.config_schema.bipolar]
+type = "bool"
+
+# 峰值保持窗口（秒）；0 = 不画峰值。
+[widget.config_schema.peak_s]
+type = "f64"
+default = 1.0
+
+# 离界这个比例起变琥珀（贴界变红）。
+[widget.config_schema.warn_at]
+type = "f64"
+default = 0.75
+
+[widget.config_schema.decimal_places]
+type = "u32"
+default = 0

@@ -1,0 +1,45 @@
+# sigflow.ui.state_badge — 枚举态的徽章 / 状态链。绑 producer 口的一列，按
+# 列契约的 decode 表解码（mask+value 先中先赢），带"在此态多久"。
+# chain = true 时把 decode 表按声明顺序排成链：当前态实心，warn/crit 的条目
+# 放侧轨（坏的态不在正常路径上）；want_param 指一个 bool 参数，为 true/false
+# 时分别把 want_on/want_off 那个态画成空心"要求"标记——开关表达的是要求，
+# 设备在哪一态它不知道，两者第一次在同一张图上分开。纯 manifest 包。
+name = "sigflow.ui.state_badge"
+version = "0.1.0"
+category = "ui_widget"
+
+[runtime]
+type = "native"
+library = "widget.json"
+entry = "unused"
+
+[widget]
+widget_type = "state_badge"
+bindable_to = [{ kind = "port" }]
+
+[widget.config_schema.column]
+type = "string"
+
+[widget.config_schema.group]
+type = "u32"
+default = 0
+
+[widget.config_schema.label]
+type = "string"
+
+[widget.config_schema.chain]
+type = "bool"
+default = false
+
+[widget.config_schema.show_age]
+type = "bool"
+default = true
+
+[widget.config_schema.want_param]
+type = "string"
+
+[widget.config_schema.want_on]
+type = "string"
+
+[widget.config_schema.want_off]
+type = "string"

@@ -1,0 +1,27 @@
+# sigflow.ui.event_strip — 事件带。绑"帧即记录"的 producer 口（一事件一帧，
+# 帧头 t0 = 事件时刻，payload 一行 f32），按 kind_column 那列的 decode 表分
+# 类上色，摆在最近 window_s 秒的时间带上。计数说 41，"每 10 s 一根"只有摆
+# 在时间轴上才看得见。tap 缺省走帧模式（每帧原样转发）。纯 manifest 包。
+name = "sigflow.ui.event_strip"
+version = "0.1.0"
+category = "ui_widget"
+
+[runtime]
+type = "native"
+library = "widget.json"
+entry = "unused"
+
+[widget]
+widget_type = "event_strip"
+bindable_to = [{ kind = "port" }]
+
+[widget.config_schema.label]
+type = "string"
+
+[widget.config_schema.window_s]
+type = "f64"
+default = 90.0
+
+[widget.config_schema.kind_column]
+type = "string"
+default = "kind"
