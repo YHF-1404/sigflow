@@ -33,6 +33,16 @@ default = 1.0
 type = "f64"
 default = 60.0
 
+# 有界量峰值 = 本次使能生命周期最坏情况；reset_param（默认 servo_on）的上升沿
+# 清零，故障→恢复不清。
+[widget.config_schema.show_peak]
+type = "bool"
+default = true
+
+[widget.config_schema.reset_param]
+type = "string"
+default = "servo_on"
+
 # 只画这些组（逗号分隔的组序号），缺省全部。
 [widget.config_schema.groups]
 type = "string"

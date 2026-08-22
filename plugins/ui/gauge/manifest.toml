@@ -1,7 +1,8 @@
 # sigflow.ui.gauge — 有界量的量表：把界画在值旁边。绑 producer 口的一列
 # （column = 列契约里的 id 或下标，group = 第几组/从站）。界缺省来自列契约
 # 的 bound（常数或同组另一列的当前值——生效的界只有生产方知道），min/max/
-# bipolar 只做覆盖。NaN = 不适用，整条置灰不画 0。峰值保持 peak_s 秒。
+# bipolar 只做覆盖。NaN = 不适用，整条置灰不画 0。值单独一行、零锚双极条独占
+# 一行、峰值刻度画在条上；峰值 = 本次使能生命周期最坏情况（见 reset_param）。
 # 纯 manifest 包。
 name = "sigflow.ui.gauge"
 version = "0.1.0"
@@ -35,10 +36,16 @@ type = "f64"
 [widget.config_schema.bipolar]
 type = "bool"
 
-# 峰值保持窗口（秒）；0 = 不画峰值。
-[widget.config_schema.peak_s]
-type = "f64"
-default = 1.0
+# 峰值 = 本次使能生命周期的最坏情况（不是 1s 滚动窗）。reset_param 指一个
+# bool 参数（默认 servo_on = 用户使能开关），它的上升沿（用户重新使能）清零
+# 峰值；故障→恢复不动它，所以故障那一下冲上去的峰值留住。
+[widget.config_schema.show_peak]
+type = "bool"
+default = true
+
+[widget.config_schema.reset_param]
+type = "string"
+default = "servo_on"
 
 # 离界这个比例起变琥珀（贴界变红）。
 [widget.config_schema.warn_at]
