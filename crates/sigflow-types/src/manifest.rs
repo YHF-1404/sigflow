@@ -392,6 +392,24 @@ pub struct ColumnGroups {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub label: Option<String>,
+    /// 身份/模式跟进组标题：这些列（组内 id）的当前值渲染在组名后面。
+    /// 为「轴身份一眼可见」而生——别名列跟上标题，接错线/刻错别名当场露馅；
+    /// 开环轴打「开环」徽章，「怎么没有跟随误差条」从疑惑变成自解释。
+    ///
+    /// 渲染规则（全声明驱动，控件零语义）：值 NaN 不显（离线/按位置回落只剩
+    /// 组名）；有 `decode` 的列命中且 name 非空才按 name+tone 显成徽章，
+    /// **不命中不显**——所以模式列只声明非缺省态（`{ value = 1, name = "开环" }`），
+    /// 缺省态干干净净；无 `decode` 的列显 `{label}{值}`（`label = "别名"` →
+    /// 「s2 · 别名3」）。
+    ///
+    /// ```toml
+    /// column_groups = { repeat_by = "slaves", label = "s{i}", title_columns = ["alias", "drive_mode"] }
+    /// ```
+    ///
+    /// 不写 = 空。序列化永远带 `[]`（与 `columns` 同例——前端类型必填，
+    /// JSON 得和类型说一样的话）。
+    #[serde(default)]
+    pub title_columns: Vec<String>,
 }
 
 /// Declares a tunable parameter on a plugin.
