@@ -1,0 +1,34 @@
+# sigflow.ui.bit_lamps — 位域的指示灯行，带边沿保持。绑 producer 口的一列，
+# 位名来自列契约的 bits。逐样本扫：一位只亮一拍，30 Hz 的页面上等于没亮过；
+# 灭了之后 hold_s 秒内画成空心环（"刚才亮过"）。纯 manifest 包。
+name = "sigflow.ui.bit_lamps"
+version = "0.1.0"
+category = "ui_widget"
+
+[runtime]
+type = "native"
+library = "widget.json"
+entry = "unused"
+
+[widget]
+widget_type = "bit_lamps"
+bindable_to = [{ kind = "port" }]
+
+[widget.config_schema.column]
+type = "string"
+
+[widget.config_schema.group]
+type = "u32"
+default = 0
+
+[widget.config_schema.label]
+type = "string"
+
+[widget.config_schema.hold_s]
+type = "f64"
+default = 1.0
+
+# 只画亮着/刚亮过的位。
+[widget.config_schema.only_on]
+type = "bool"
+default = false

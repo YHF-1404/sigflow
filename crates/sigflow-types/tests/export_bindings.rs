@@ -19,8 +19,9 @@ use ts_rs::TS;
 use sigflow_types::frame::FrameHeader;
 use sigflow_types::doc::{DocEdit, EditTarget, Finding, Provenance, ResolvedField};
 use sigflow_types::manifest::{
-    ActionDescriptor, BindableTarget, ConfigField, Direction, DocumentDecl, ParameterDescriptor,
-    PluginManifest, PluginSource, PortDescriptor, Presentation, WidgetManifest,
+    ActionDescriptor, BindableTarget, BitDecl, Bound, BoundRef, ColumnDecl, ColumnGroups,
+    ColumnKind, ConfigField, Direction, DocumentDecl, EnumCase, ParameterDescriptor,
+    PluginManifest, PluginSource, PortDescriptor, Presentation, Tone, WidgetManifest,
 };
 use sigflow_types::node::{
     Connection, ControlConnection, NodeConfig, NodeDisplay, NodeMeta, NodePosition, ParentPortDecl,
@@ -94,6 +95,8 @@ fn export_bindings() {
         PluginManifest, WidgetManifest, BindableTarget, ConfigField, PluginSource,
         Direction, PortDescriptor, ParameterDescriptor, ActionDescriptor,
         DocumentDecl, Presentation,
+        // 列契约（口的列怎么读）
+        ColumnDecl, ColumnKind, ColumnGroups, EnumCase, BitDecl, Bound, BoundRef, Tone,
         // configuration documents: schema shape, resolution, validation
         DocSchema, ParamGroup, SectionDecl, LibraryDecl,
         NodeDecl, GroupDecl, SlotDecl, CollectionDecl, CollectionItem, ActiveDecl,

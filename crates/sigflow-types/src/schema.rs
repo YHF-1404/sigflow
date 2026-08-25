@@ -443,6 +443,14 @@ pub enum DocState {
     /// Device and document disagree (checksum readback mismatch, or the
     /// device reports it is running something else).
     Diverged,
+    /// The device is not reachable (not on the bus), so nothing can be said
+    /// about its lifecycle. Per-target only ([`TargetStatus`]) — a whole
+    /// document is never "offline". This is the *expected* state of an axis
+    /// deliberately removed from a partial ring; a failed write to a device
+    /// that *is* reachable stays in its lifecycle state with `error` set.
+    /// Batch operations skip offline targets and report them as such instead
+    /// of failing the whole document.
+    Offline,
 }
 
 /// What the consuming plugin last did with the document, as written to

@@ -1,0 +1,48 @@
+# sigflow.ui.state_cards — 按组出卡：绑一个 producer 口，口的每一组（从站）
+# 一块卡，卡里按列契约的 kind 各画各的——枚举成徽章（带在此态多久）、位域
+# 成亮着/刚亮过的灯、计数成值+增量、有界量成小条。控件不知道什么是 CiA402，
+# 它只知道第 0 列是 enum、第 4 列是 counter。卡的边框取卡内最坏的语义色：
+# 一行回答"谁在、谁使能、谁的参数对"。绑 status 口它就是从站带；绑 diag 口
+# 就是主站环的一块卡。纯 manifest 包。
+name = "sigflow.ui.state_cards"
+version = "0.1.0"
+category = "ui_widget"
+
+[runtime]
+type = "native"
+library = "widget.json"
+entry = "unused"
+
+[widget]
+widget_type = "state_cards"
+bindable_to = [{ kind = "port" }]
+
+[widget.config_schema.label]
+type = "string"
+
+# 连 signal 列也列出数值（缺省只画有状态语义的列）。
+[widget.config_schema.show_signals]
+type = "bool"
+default = false
+
+[widget.config_schema.hold_s]
+type = "f64"
+default = 1.0
+
+[widget.config_schema.window_s]
+type = "f64"
+default = 60.0
+
+# 有界量峰值 = 本次使能生命周期最坏情况；reset_param（默认 servo_on）的上升沿
+# 清零，故障→恢复不清。
+[widget.config_schema.show_peak]
+type = "bool"
+default = true
+
+[widget.config_schema.reset_param]
+type = "string"
+default = "servo_on"
+
+# 只画这些组（逗号分隔的组序号），缺省全部。
+[widget.config_schema.groups]
+type = "string"
