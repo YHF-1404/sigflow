@@ -17,7 +17,7 @@ entry = "e"
 id = "status"
 direction = "producer"
 semantic_type = { kind = "timeseries.signal", dtype = "f32" }
-column_groups = { repeat_by = "slaves", label = "s{i}" }
+column_groups = { repeat_by = "slaves", label = "s{i}", title_columns = ["alias", "drive_mode"] }
 
 [[ports.columns]]
 id = "sw"
@@ -49,6 +49,15 @@ bound = { min = 0.0, max = 1000.0 }
 id = "dropouts"
 kind = "counter"
 
+[[ports.columns]]
+id = "alias"
+label = "别名"
+
+[[ports.columns]]
+id = "drive_mode"
+kind = "enum"
+decode = [ { value = 1, name = "开环", tone = "warn" } ]
+
 [[ports]]
 id = "plain"
 direction = "producer"
@@ -66,7 +75,14 @@ fn the_documented_shape_parses_and_roundtrips() {
     let groups = status.column_groups.as_ref().expect("groups");
     assert_eq!(groups.repeat_by.as_deref(), Some("slaves"));
     assert_eq!(groups.label.as_deref(), Some("s{i}"));
-    assert_eq!(status.columns.len(), 5);
+    assert_eq!(groups.title_columns, ["alias", "drive_mode"], "身份/模式列跟进组标题");
+    assert_eq!(status.columns.len(), 7);
+
+    // 模式列只声明非缺省态：value=0（foc）不命中任何 decode 条目 → 标题不加东西。
+    let dm = &status.columns[6];
+    assert_eq!(dm.decode.len(), 1);
+    assert_eq!(dm.decode[0].mask, None, "缺省 mask = 整值相等");
+    assert_eq!(dm.decode[0].tone, Tone::Warn);
 
     let sw = &status.columns[0];
     assert_eq!(sw.kind, ColumnKind::Enum);
@@ -99,6 +115,12 @@ fn the_documented_shape_parses_and_roundtrips() {
     let plain = &m.ports[1];
     assert!(plain.columns.is_empty());
     assert!(plain.column_groups.is_none());
+    // title_columns 不写 = 空 Vec;序列化永远带 []——与 columns 同例,
+    // 前端类型必填,JSON 得和类型说一样的话。老 manifest 零感知。
+    let old: sigflow_types::manifest::ColumnGroups =
+        toml::from_str(r#"repeat_by = "slaves""#).unwrap();
+    assert!(old.title_columns.is_empty());
+    assert_eq!(serde_json::to_value(&old).unwrap()["title_columns"], serde_json::json!([]));
     let json = serde_json::to_value(plain).unwrap();
     assert_eq!(json["columns"], serde_json::json!([]));
     assert!(json.get("column_groups").is_none());
