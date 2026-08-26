@@ -264,7 +264,7 @@ pub struct PortDescriptor {
 /// id = "dropouts"
 /// kind = "counter"
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ts", derive(TS))]
 pub struct ColumnDecl {
     /// 组内唯一；控件配置里按它选列（`column = "ferr"`），不按下标。
@@ -325,7 +325,7 @@ pub enum Tone {
 }
 
 /// 枚举解码的一条：`(round(v) & mask) == value`。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ts", derive(TS))]
 pub struct EnumCase {
     /// 缺省 = 全 1（整值相等）。CiA402 状态机位那种「看低 7 位」用 0x6f；
@@ -340,7 +340,7 @@ pub struct EnumCase {
 }
 
 /// 位域里的一位。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ts", derive(TS))]
 pub struct BitDecl {
     pub bit: u8,
@@ -351,7 +351,7 @@ pub struct BitDecl {
 }
 
 /// 有界量的界。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ts", derive(TS))]
 pub struct Bound {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -381,7 +381,7 @@ pub enum BoundRef {
 ///
 /// 组数不在这里声明——运行时由帧的通道数除以组内列数得出，帧永远是对的，
 /// 参数值只是它的来历。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ts", derive(TS))]
 pub struct ColumnGroups {
     /// 组数来自哪个参数（如 `slaves`）。只为说明来历，消费方不靠它算。
