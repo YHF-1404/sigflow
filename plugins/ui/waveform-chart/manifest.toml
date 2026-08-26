@@ -1,6 +1,19 @@
 # sigflow.ui.waveform_chart — 时域波形图（MVP 8 控件之一）。绑 producer 端口,
 # 数据走 tap（窗口/刷新率/统计量配置在绑定的 tap 段）。纯渲染,不含触发/捕获
 # 逻辑。y_min/y_max 缺省则自适应量程。纯 manifest 包。
+#
+# 图例读**绑定口的列契约**（`columns` + `column_groups`）：一根轴的那几个量
+# 自动成一组、一组一个可折叠的标签，组名带 `title_columns` 的别名/模式徽章,
+# 通道名来自 `columns[].label`。所以：
+#   * 绑到**带列契约的生产口**才有分组——绑到下游监视节点的 signal_in 只会
+#     退化成平铺 ch0..chN（消费口不带契约）;
+#   * 有契约时 `labels` 不再生效（见该项说明）;
+#   * 枚举/位域列与 `title_columns` 里的身份列默认不画（枚举画成曲线会在两个
+#     状态间连出一条穿过不存在中间态的斜线），但都还在图例里、都算进「N 条已
+#     隐藏」——收起不等于消失。
+# 图例手势：单击组=展开/折叠，单击成员=显示/隐藏，右键=同上（组则整组），
+# 双击=只看它（再双击还原），按住拖=组内排序或拖进取景框，Alt+单击=本地改名。
+# 折叠/改名/排序/取景框存在浏览器本地（每个控件实例一份），隐藏状态刻意不存。
 name = "sigflow.ui.waveform_chart"
 version = "0.1.0"
 category = "ui_widget"
@@ -33,6 +46,8 @@ type = "bool"
 default = true
 
 # 通道显示名，, 或 | 分隔（如 "sig|trig|thr"；缺省 ch0..chN）。
+# **只在绑定口没有列契约时兜底**：有契约就以 `columns[].label` 为准——手抄一份
+# 通道名正是列契约要消灭的漂移（口加一列，手抄的那串就悄悄错位一格）。
 [widget.config_schema.labels]
 type = "string"
 
