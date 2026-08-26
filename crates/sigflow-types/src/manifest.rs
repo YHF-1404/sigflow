@@ -221,6 +221,27 @@ pub struct PortDescriptor {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub column_groups: Option<ColumnGroups>,
+    /// 这个口发出的**最大一帧有多少字节**。
+    ///
+    /// 共享内存的数据段是按「帧上限 × 订阅数 × 缓冲深度」**预留**的——不是
+    /// 按实际用量增长的。所以帧上限这个数一刀切地取得慷慨，代价不是"多占一
+    /// 点"，是每个生产口按最坏情况整段吃掉内存：一个每拍发 1 KiB 的口，按
+    /// 1 MiB 兜底就预留了一千倍。台架上 7 个口这样吃掉了 /dev/shm 的 7.2
+    /// GiB（上限 7.7 GiB），节点被 OOM killer 杀掉。
+    ///
+    /// 一帧多宽只有生产方知道（列数 × 每帧几拍 × 元素宽度，而每帧几拍是它
+    /// 自己的节奏）。所以让它说，别让预留去猜。
+    ///
+    /// None = 不知道，按 shell 的兜底值走（够用但浪费）。
+    ///
+    /// **往大了声明。** 数据面对超长帧是报错不是截断，但那条安全网只对"先攒
+    /// 够再发"的插件有效；**按缓冲容量反推每帧发几行的插件根本不会响**——它
+    /// 按你给的容量裁完照发，给小了的失败模式是**静默少发遥测**。这类插件请
+    /// 按自己的最大配置（最多几个从站、每帧几行）算满再留几倍余量，别按当前
+    /// 参数值算。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number"))]
+    pub max_frame_bytes: Option<u64>,
 }
 
 /// 列契约：一个多列交织口里，某一列是什么、怎么读。
