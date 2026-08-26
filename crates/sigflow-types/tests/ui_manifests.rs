@@ -52,4 +52,16 @@ fn presentation_defaults_to_face_and_param_table_asks_for_a_page() {
         "the param table binds documents and nothing else"
     );
     assert_eq!(table.bindable_to[0].kind.as_str(), "doc");
+
+    // 手势表也是整页的，但绑的是一个**字符串参数**（手势库的 JSON），不是
+    // 文档——它编的东西没有 DocSchema 那种覆盖链，是一个矩阵。
+    let gesture = read("gesture-table").widget.unwrap();
+    assert_eq!(gesture.presentation, Presentation::Page);
+    assert_eq!(gesture.bindable_to.len(), 1);
+    assert_eq!(gesture.bindable_to[0].kind.as_str(), "param");
+    assert_eq!(
+        gesture.bindable_to[0].data_type.as_deref(),
+        Some("string"),
+        "手势库是一份 JSON——绑到数值参数上这个控件读不出东西"
+    );
 }
