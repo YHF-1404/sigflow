@@ -65,14 +65,28 @@ TOML 形状在 `ScopeConfig` 的文档注释里。要点：
 - `vertical[]`：逐通道 `v_div > 0`、`offset`、`on`、`coupling dc|ac`、`interp
   none|linear|sinc`、`bw_limit_hz ≥ 0`；`channel` 必须在 `channels` 里（空 = 整口时不
   查）。AC = 减去当前记录窗内的均值，密度 / 视图 / 测量都按耦合后的值。
-- `measure`：`channels ⊆ channels`、`gate screen|cursors`。测量在引擎里按记录算，随
-  meas 帧发，不适用 = NaN 不是 0。
+- `measure`：`channels ⊆ channels`、`gate screen|cursors`；`gate = cursors` 时
+  `cursors = { a, b }` 必须给（相对时间零点的存储拍数，可为负，a ≠ b）——光标是
+  setup 的一部分，UI 拖光标即时 `scope_set`、手势结束回写；引擎不会拿屏幕代替。
+  测量在引擎里按记录算，随 meas 帧发，不适用 = NaN 不是 0。
+- **拍数的度量**：`timebase.span_scans` 与 `trigger.holdoff_samples` 都是**源口的拍**
+  （抽取前）；入口峰值检测 D:1 之后引擎自己除以 D 换成存储拍，操作者不用知道 D。
+  `measure.cursors` 相对时间零点，按**存储拍**计（它是视图坐标）。
 - 几何（改了重建环）= `channels + depth_bytes + budget_bytes_per_s`；其余就地。
 - `TapConfig` 去掉 `trigger`（旧绑定里的 trigger 字段读时被丢，不报错——它只存在于没
   合过的分支上）；`TapTrigger` 类型删除，`TrigSlope` / `TrigMode` 保留给 ScopeTrigger。
 - 一个口绑定要么 `tap` 要么 `scope`，按控件类型二选一。CLI：
   `widget bind <alias> port:<id> --scope-file setup.toml`；壳体 `widget_bind` 对本节点口
   当场解析列 id（同 tap 那条）。
+
+### 4.1 引擎落地时核过的几条（sigflow-core 92868fd）
+
+- 外触发源不在选中列里时追加进环（环列 = 显示列 + 触发源列）；vertical / measure 按
+  （列 id, 组）身份配对；率取 sfrate01 > declared_rate_hz；`span_s` 而口无率 → 拒。
+- `D = ceil(fs × 存储字节/scan / budget)`，源已是对时字节本来翻倍、不再乘 2。
+- 视图帧的 `kind` 加了 2 = 原始 (min, max) 对（对存储放大到每像素不足一拍时）。
+- 口在对 / 非对之间切换而环布局不合（decim = 1）时帧被丢并计入 `dropped_scans`
+  ——不会静默按错布局写。
 
 ## 5. 控件声明
 

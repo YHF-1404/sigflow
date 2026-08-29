@@ -47,7 +47,7 @@ use sigflow_types::schema::{
 };
 use sigflow_types::semantic::{BackpressurePolicy, BatchSpec, Dtype, PayloadSchemaId, SemanticType};
 use sigflow_types::ui::{
-    AcqMode, AcqSetting, BindKind, ColumnRef, Coupling, Gate, Interp, Layout, MeasureSetting,
+    AcqMode, AcqSetting, BindKind, ColumnRef, Coupling, CursorPair, Gate, Interp, Layout, MeasureSetting,
     ScopeConfig, ScopeTrigger, TapConfig, TapMode, Timebase, TrigKind, TrigMode, TrigSlope,
     UiWidget, VerticalSetting, WidgetBinding,
 };
@@ -87,7 +87,7 @@ fn export_bindings() {
         UiWidget, WidgetBinding, BindKind, Layout, TapConfig, TapMode,
         // tap 选列；示波器 setup
         ColumnRef, ScopeConfig, ScopeTrigger, TrigKind, TrigSlope, TrigMode, Timebase,
-        AcqMode, AcqSetting, Coupling, Interp, VerticalSetting, MeasureSetting, Gate,
+        AcqMode, AcqSetting, Coupling, Interp, VerticalSetting, MeasureSetting, Gate, CursorPair,
         // rpc envelope + method payloads
         RpcMessage, RpcRequest, RpcResponse, RpcError, RpcNotification,
         SetParamRequest, GetParamRequest, GetParamResponse, InvokeActionRequest,

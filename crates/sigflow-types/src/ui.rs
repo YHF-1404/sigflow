@@ -386,8 +386,8 @@ pub struct ScopeTrigger {
     /// UI 给"抗噪 = 源列可见 pk-pk 的 5%"一键写入。
     #[serde(default)]
     pub hysteresis: f64,
-    /// 释抑：触发后至少再过这么多拍才能再触发。按拍数——与深度、跨度同度量；
-    /// UI 有率时并排显示时间。
+    /// 释抑：触发后至少再过这么多拍才能再触发。按**源口的拍数**（抽取前）——与
+    /// `span_scans` 同一度量，引擎按抽取比换成存储拍；UI 有率时并排显示时间。
     #[serde(default)]
     pub holdoff_samples: u32,
     #[serde(default)]
@@ -491,7 +491,9 @@ impl std::str::FromStr for TrigMode {
 
 /// 时基：一屏多宽、触发点在屏幕哪儿。
 ///
-/// 跨度二选一：`span_s`（秒，有率的口）或 `span_scans`（拍，没有率的口也能用）。
+/// 跨度二选一：`span_s`（秒，有率的口）或 `span_scans`（**源口的拍数**，抽取前；
+/// 没有率的口也能用）。拍数一律指源口的拍——入口峰值检测抽取 D:1 之后引擎自己
+/// 除以 D 换成存储拍，操作者不用知道 D；`holdoff_samples` 同一度量。
 /// `position` = 触发点（t = 0）在屏幕的位置，[0, 1]，缺省 0.5——示波器上这是
 /// 水平位置旋钮，不是触发的属性；pre = round(position × span_scans)。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -674,8 +676,21 @@ pub enum Gate {
     Cursors,
 }
 
+/// 一对时间光标：相对时间零点（触发窗以触发拍为 0、自由跑 / roll 以右缘为 0）
+/// 的**存储拍**数，可为负。它是 setup 的一部分（真机的光标随 setup 存），UI
+/// 拖光标即时 `scope_set`、手势结束回写绑定。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub struct CursorPair {
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub a: i64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub b: i64,
+}
+
 /// 测量设置：量哪些通道、门在哪儿。测量在引擎里按记录算，随 meas 帧发；
-/// 不适用 = NaN 不是 0。
+/// 不适用 = NaN 不是 0。`gate = cursors` 时 `cursors` 必须给（门 = 两光标之
+/// 间），引擎不会拿屏幕代替——那是把不正常换成正常。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ts", derive(TS))]
 pub struct MeasureSetting {
@@ -683,6 +698,24 @@ pub struct MeasureSetting {
     pub channels: Vec<ColumnRef>,
     #[serde(default)]
     pub gate: Gate,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub cursors: Option<CursorPair>,
+}
+
+impl MeasureSetting {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.gate == Gate::Cursors {
+            match self.cursors {
+                None => return Err("measure: gate = cursors needs measure.cursors".to_string()),
+                Some(c) if c.a == c.b => {
+                    return Err("measure.cursors: a and b must differ".to_string())
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
 }
 
 /// 一台示波器的 setup——持久化在绑定的 `bind.scope` 里（node.toml），CLI
@@ -811,6 +844,7 @@ impl ScopeConfig {
                 ));
             }
         }
+        self.measure.validate()?;
         for (i, c) in self.measure.channels.iter().enumerate() {
             c.validate()
                 .map_err(|e| format!("measure.channels[{i}]: {e}"))?;
@@ -1100,6 +1134,22 @@ timebase = { span_scans = 4000 }
         let mut c = setup();
         c.trigger.as_mut().unwrap().hysteresis = -0.1;
         assert!(c.validate().unwrap_err().contains("hysteresis"));
+    }
+
+    #[test]
+    fn 光标门要有光标_且两条不重合() {
+        let mut c = setup();
+        c.measure.gate = Gate::Cursors;
+        assert!(c.validate().unwrap_err().contains("measure.cursors"));
+        c.measure.cursors = Some(CursorPair { a: -40, b: -40 });
+        assert!(c.validate().unwrap_err().contains("differ"));
+        c.measure.cursors = Some(CursorPair { a: -40, b: 12 });
+        assert!(c.validate().is_ok());
+        let s = serde_json::to_string(&c.measure).unwrap();
+        assert!(s.contains(r#""cursors":{"a":-40,"b":12}"#), "{s}");
+        // screen 门不带光标也行
+        let m: MeasureSetting = serde_json::from_str(r#"{"channels":[],"gate":"screen"}"#).unwrap();
+        assert!(m.cursors.is_none() && m.validate().is_ok());
     }
 
     #[test]
