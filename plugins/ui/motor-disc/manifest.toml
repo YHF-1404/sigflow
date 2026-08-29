@@ -1,0 +1,170 @@
+# sigflow.ui.motor_disc —— 圆盘电机：一张图上同时画三个「转子在哪」。
+#
+# 给闭环 FOC 仿真台（dexhand.sim.foc_sil）配的，绑它的 `rotor` 生产口
+# （200 Hz，一行 = 一拍，带列契约）。只做极对数 1：电角 = 机械角，dq 系才能
+# 直接画在圆盘上。
+#
+# ── 三个角，两条夹角，各是一个算法 ─────────────────────────────────────
+#
+#   theta_deg        转子真机械角（仿真真值，台架上永远拿不到的那一列）
+#   theta_enc_deg    编码器计数折算的角——漏脉冲之后它会漂
+#   theta_exec_deg   控制器执行帧的角——反 Park 用的，含 enc_off 与换向超前
+#
+#   enc − theta      = 漏脉冲攒下的误差。Z 重校正时以 1 count/ms 的斜率合拢，
+#                      这是 hml 要看的那条算法：合拢的过程画在圆盘上，
+#                      不是一条曲线上的台阶。
+#   exec − enc − adv = 换向角残差（enc_off 没标准 / 漏脉冲传进执行帧的那一份）
+#
+# **超前角 `adv_deg` 必须单独一列**：换向超前是设计量不是误差，转得越快超前越
+# 大。不减掉它，exec 与 enc 的夹角在高速下永远不归零，看图的人会把一个设计量
+# 读成一个没修好的误差——错的解释比没有解释更坏。控件把超前那一段画成另一种
+# 线型（弧上打点），残差才是实线。
+#
+# ── 画什么（四个可勾选的层，缺省全开）────────────────────────────────────
+#
+#   三相电流   U/V/W 绕组轴在 0°/120°/240°，各一根随 iu/iv/iw 伸缩的柱，
+#              符号定颜色（正=向外）。
+#   Clarke     αβ 矢量箭头，定子系（固定坐标）。箭头尖端拖一段轨迹 =
+#              αβ 电流圆——正常是圆，换向错 / 死区效应会变形。轨迹长度
+#              trail_samples 行，控件自己攒（见 tap 模式）。
+#   dq         id/iq 矢量 + id_ref/iq_ref 空心矢量，画在**控制器的**转子系里
+#              ——按 theta_exec_deg 旋转，不按 theta_deg。这样 dq 系相对真
+#              转子的偏转肉眼可见，漏脉冲 / enc_off 残差一拉就看得见。
+#   编码器     外圈刻度环（cpr 格，每 cpr/64 一刻）、Z 标记在 z_deg、一根
+#              编码器指针在 theta_enc_deg、A/B/Z 三个灯（Z 灯边沿保持，
+#              见下）、miss_total 计数。
+#
+# 转子 N/S 标记始终画在 theta_deg；hand = 1 时画手/刹车图标，位置在
+# hand_deg（节点里那只手的目标角，不是鼠标位置——见「交互」）。
+#
+# 勾选状态是操作者本地偏好（localStorage，按节点路径 + 控件别名存），不进
+# node.toml：它说的是"我这块屏幕想看什么"，不是信号流的事。config 里的
+# show_* 只是首次打开的缺省。
+#
+# ── 列契约（生产口要声明的列，NaN = 本拍不适用，控件置灰不画 0）──────────
+#
+#   theta_deg / theta_enc_deg / theta_exec_deg   signal  °   都收进 [0, 360)
+#   adv_deg              signal  °       换向超前（电角；极对数 1 同域）
+#   w_cps                signal  cps     counts/s（本项目的速度单位）
+#   iu iv iw             signal  mA
+#   ialpha ibeta         signal  mA
+#   id iq id_ref iq_ref  signal  mA      闭环没跑的拍写 NaN，不写 0
+#   torque_unm           signal  µNm
+#   hand                 enum            0 = 自由（tone off）/ 1 = 手按住（warn）
+#   hand_deg             signal  °       手的目标角；hand = 0 时 NaN
+#   z_deg                signal  °       Z 脉冲机械位置（常量）
+#   cpr                  signal  counts  每转计数（常量，4096）——刻度环按它画，
+#                                        不在控件里再设一遍（两个说法会分家）
+#   z_dev_counts         signal  counts  最近一次 Z 测得的偏差；**第一次 Z 之前
+#                                        是 NaN**——"偏差为 0"和"还没测过"是两个
+#                                        0，画出来必须分得开
+#   enc_off_counts       signal  counts
+#   count                signal  counts  无界、双向——不是 counter（counter 是
+#                                        单调计数，意义在增量）
+#   abz                  bitfield        bit0 = A、bit1 = B、bit2 = Z。A/B 是
+#                                        本拍电平（只在慢转/手拖时有意义，
+#                                        200 Hz 采样对转起来的 A/B 是混叠的）；
+#                                        **Z 必须是「本拍内出现过」的锁存位**：
+#                                        Z 只有 1 count 宽，按电平采样 200 Hz
+#                                        几乎永远看不见它
+#   miss_total           counter edges   累计漏掉的边沿
+#
+# 一张图只绑一个口，所以这些列虽与 isr/vel 口重叠也要在 rotor 口再发一份：
+# 控件绑一个口是框架的约束，不是这里的选择。
+#
+# ── tap：stream，不是 window ────────────────────────────────────────────
+# 控件用 stream 模式（每一行都到，按 refresh_hz 打包），自己攒 αβ 轨迹环。
+# 两个理由：① Z 锁存位、miss_total 的增量、hand 的沿都是逐拍的事，window
+# 模式只给"窗里最后一眼"会漏；② 带宽——stream 是 200 行/s × 24 列 × 4 B ≈
+# 19 KB/s，window(200) × 30 Hz 每次拷整窗是它的 30 倍。
+#
+# ── 交互：一只手，两个参数 ───────────────────────────────────────────────
+# 控件往**绑定节点**写两个 hot_change 参数（config 里可改名，留空 = 只看不动）：
+#
+#   hold_param   bool   hand_hold        按下 = true，松开 = false
+#   angle_param  f64    hand_angle_deg   手的目标角 [0, 360)
+#
+# 节点侧语义（foc_sil）：hand_hold 上升沿那一拍把一只"手"（硬弹簧 + 阻尼）
+# 锁在**转子当前真角**上——不看 hand_angle_deg 当时是多少；此后 hand_angle_deg
+# 每写一次手的目标就跟到哪；hand_hold = false 手消失，此时写 hand_angle_deg
+# 没有作用。误差按最短路取到 (−180, 180]，绕圈由节点负责，控件只发 [0, 360)。
+#
+# 控件侧顺序与换算：
+#   按下   先写 angle = 此刻 tap 到的 theta_deg，再写 hold = true。目标从转子
+#          所在处起步，而不是从鼠标点到的地方——用户点的是圆盘任意处，不是
+#          转子标记；直接拿鼠标角当目标，手一出现就把转子往最多 180° 外猛拽。
+#   拖动   angle = 按下时的 theta_deg + (鼠标角 − 按下时的鼠标角)，收进 [0, 360)。
+#          节流：一条 RPC 在飞时新角度只覆盖待发值，不排队（控制面队列是
+#          无界的，控件不能灌）；上限 60 Hz。
+#   松开   hold = false。pointercancel / 窗口失焦 / 控件卸载同样写 false——
+#          一只忘了松的手会把电机按住不放。写失败留不下别的痕迹，唯一的出口
+#          是 hand 那一列的灯还亮着：那时去参数面板把 hand_hold 拨回去。
+#
+# 画在圆盘上的手取 hand_deg 列，不取鼠标位置：手画在节点说它在的地方，
+# 参数写丢了 / 迟到了，图上的手就落在鼠标后面——同一个证人既显示又控制，
+# 它伪证时全链绿灯（s3 假反馈那一课）。
+#
+# ── 可选：注入漏脉冲 ────────────────────────────────────────────────────
+# 点击刻度环某处 → 写 burst_param（u32，缺省 miss_burst）。动作（action）不
+# 带参数，所以只能是参数；语义定成**「还要丢几个边沿」**：节点边丢边减到 0，
+# 回读的值就是还剩多少——写 10 再写 10 是"再丢 10 个"，不是"没变化"。
+#
+# 纯 manifest 包：壳体只读声明做绑定校验，前端负责渲染；[runtime] 是 schema
+# 必填项，widget.json 只是占位内容，永远不会被加载。
+name = "sigflow.ui.motor_disc"
+version = "0.1.0"
+category = "ui_widget"
+
+[runtime]
+type = "native"
+library = "widget.json"
+entry = "unused"
+
+[widget]
+widget_type = "motor_disc"
+# 圆盘 + 四层叠加 + 轨迹，节点脸上那一小格摆不下，整页渲染。
+presentation = "page"
+bindable_to = [{ kind = "port" }]
+
+[widget.config_schema.label]
+type = "string"
+
+# αβ 轨迹保留多少行（200 Hz 下 200 行 = 1 s ≈ 慢转一圈）。
+[widget.config_schema.trail_samples]
+type = "u32"
+default = 200
+
+# 四个层首次打开的缺省；之后的勾选存浏览器本地。
+[widget.config_schema.show_phases]
+type = "bool"
+default = true
+
+[widget.config_schema.show_clarke]
+type = "bool"
+default = true
+
+[widget.config_schema.show_dq]
+type = "bool"
+default = true
+
+[widget.config_schema.show_encoder]
+type = "bool"
+default = true
+
+# 交互写的参数。留空 = 只看不动（绑到一个没有这两个参数的节点上也一样）。
+[widget.config_schema.hold_param]
+type = "string"
+default = "hand_hold"
+
+[widget.config_schema.angle_param]
+type = "string"
+default = "hand_angle_deg"
+
+[widget.config_schema.burst_param]
+type = "string"
+default = "miss_burst"
+
+# 点一下刻度环丢几个边沿。
+[widget.config_schema.burst_edges]
+type = "u32"
+default = 8
