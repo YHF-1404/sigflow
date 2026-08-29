@@ -220,8 +220,9 @@ server.rs 里 handler 签名不带连接身份，但服务端能看方法名和�
 - 组装完先 `TapConfig::validate()`，再发 `widget_bind`。
 - 壳体 `widget_bind`：绑的是本节点自己的口且口声明了列时，当场按契约解析
   `channels` / `trigger.source` 的列 id，错了拒并列出可选列——错列名不该存进
-  node.toml、等到浏览器建 tap 才露头。消费口的契约在父容器，绑定时解析不了，
-  照旧放行（建 tap 时再拒）。
+  node.toml、等到浏览器建 tap 才露头。本节点**生产口**没声明列时写列名也拒（它
+  永远解析不出来）；只有没声明列的**消费口**（契约在父容器）放行，建 tap 时再拒；
+  `@n` 一律不拦；口不在 manifest 里不拦。
 - `widget list` 里把 channels / trigger 打印出来。
 
 示例（dex 的 foc-sil.sh 会用）：
