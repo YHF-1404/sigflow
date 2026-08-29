@@ -6,6 +6,8 @@ sigflow `feat/tap-scope`（`crates/sigflow-types/src/ui.rs`：`TapConfig.channel
 测试）；控件声明在 `plugins/ui/waveform-chart/manifest.toml` 头。本文是给
 sigflow-core 那边的任务书：壳体、RPC、CLI、前端都在那个仓。
 
+**2026-08-29 落地**：sigflow-core `feat/tap-scope` 57ab08a 按本文实现并逐轮核过（壳体状态机 / 选列 / run-stop / 线协议 v3 / RPC 含 §3.7 / CLI / 前端 / 真口验收）；核对中改过的地方都已回写进本文。两仓分支均未合 main、未推，合并与系统包归 hml。
+
 ## 0. 一句话
 
 **tap = 一台示波器。** 一个口上开几台都行，每台自己选列、自己的触发、自己的
