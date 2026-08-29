@@ -73,10 +73,23 @@ position = 0.5                        # 触发拍前面占窗的比例
 - `tap_control(id, Run | Stop | Single)`。
 - 源列解析在 shell.rs 的 handler 里做（tap.rs 不认识描述子）：`ColumnRef::Column`
   对着口的 `columns`/`column_groups` 解析成交织下标 `group × cols.len() + col`；
-  不带 group 的选列引用按组展开；触发源不带 group 而口有多组 → 拒（"源只能是
-  一个通道"）；找不到 → 拒并列出可选列 id；`Channel(n)` 直接用。tap 拿到的是解
-  析后的 `Vec<usize>` 和触发通道下标；feed 时若某帧的通道数 ≤ 任一下标，这一帧
-  当"通道数变"处理（见断）。
+  找不到 → 拒并列出可选列 id；`Channel(n)` 直接用。触发源：口**声明了**
+  `column_groups` 而引用不带 group → 拒（"源只能是一个通道"，按声明判，不看运
+  行时几组）。
+- **组数只有帧知道**（`ColumnGroups`："运行时由帧的通道数除以组内列数得出"），
+  所以不带 group 的选列引用解析成 `EveryGroup{col, ncols}`，到 feed 时按帧宽展
+  开；`TapManager` 记每个口最近一次见到的通道数（有没有 tap 都记），
+  `create_tap`/`set_tap`/`list_taps` 应答里的 `channels` 按它展开，口还没出过数据
+  时按一组算——应答要带 `port_channels`（没见过 = null），让前端知道这份展开是
+  按数据还是按假设，不靠"帧的通道数和句柄对不上"去猜；对不上时再拿
+  `list_taps` 刷新。
+- feed 时若选列或**触发源**的下标在这一帧的布局里够不着（帧宽变了、带组序的引
+  用指到了不存在的组），这一帧当"通道数变"：清环、什么都不发，等布局对上再
+  从头攒。**不得 panic**（触发源与选列同样要查）。应答里 `channels` 为空而声明
+  非空，就是"这个布局下够不着"的出口。
+- 契约与帧宽要自洽：无组的契约要求帧宽 == 列数，有组的要求帧宽是列数的整数
+  倍；不满足同样当"布局不合"不发——传进来的契约是一句主张（见 3.6），帧是证
+  人，两者对不上时不能按错的契约给列贴名。
 - 无契约的口 `channels` 只能是 `@n`。
 
 ### 3.2 选列
@@ -98,11 +111,14 @@ Low/High/未知）、`last_trig`、`pending: Option<{trig_abs, post_left}>`、
 3. 比较态：rising 时 `v ≤ level − h/2` 进 Low、`v ≥ level + h/2` 进 High；跨越 =
    prev==Low ∧ 现在 High（falling 对称，either 两边都认）。h = 0 时就是
    `prev < level ∧ v ≥ level`。
-4. armed = `contig ≥ pre` ∧ `pending.is_none()` ∧ `abs − last_trig ≥ holdoff`
-   ∧ running。跨越且 armed → `pending = {trig_abs: abs−1, post_left: post}`
-   （触发拍本身算 post 的第一拍，按你实现时的约定定死并写测试）。
-5. `pending` 存在且 post 到齐 → **立刻**从环切出 `[t−pre, t+post)` 到 `captured`
-   （`trig_offset = pre`），`last_trig = t`，`pending = None`。single 模式：立刻出
+4. armed = `contig ≥ pre` ∧ `pending.is_none()` ∧ `t − last_trig ≥ holdoff`
+   ∧ running（t = 本次跨越拍）。跨越且 armed → `pending = {trig_abs: t}`。
+   **触发在写环之前判**：position = 1（post = 0）时窗是 `[t − pre, t)`，触发拍
+   一写进去就会把 `t − pre` 那拍冲掉。
+5. **触发拍本身算 post 的第一拍**：`pending` 存在且 `abs == t + post` → **立刻**
+   从环切出 `[t−pre, t+post)` 到 `captured`（`trig_offset = pre ∈ [0, window]`；
+   position = 1 时 = window，触发拍不在窗里、T 标记在右缘——前端要接受
+   `trig_offset == 帧长`），`last_trig = t`，`pending = None`。single 模式：立刻出
    帧（flags TRIGGERED|STOPPED），`running = false`。
 6. feed 末尾：`captured` 存在且到刷新点（`frame_count == 0` 或距上次出帧 ≥ 周期）
    → 出帧（TRIGGERED）；没到就留着，后来的捕获覆盖它（一个周期内多次触发只留
@@ -111,19 +127,28 @@ Low/High/未知）、`last_trig`、`pending: Option<{trig_abs, post_left}>`、
 7. auto：running ∧ `pending.is_none()` ∧ 环已满 ∧ `abs − max(last_trig, 环重启点)
    ≥ 2 × window_samples` → 按刷新点出自由跑的窗（不带 TRIGGERED，
    `trig_offset = 0`）。"2 个窗长"写死并注释。normal：没触发不出帧。
-8. 断（帧头 `disc` / 跳号 / 通道数变）→ 清环（`contig = 0`、环内容作废）、
-   `pending = None`、`prev = 未知`；之后要重新攒满（无触发时也要攒满一窗才出，
-   `should_emit` 的 `total_samples ≥ window` 那条按重启后算）。**没有触发的
-   window 模式同样清环**（拍板 ②：与 stream 一致；SDK 按约定维护 sample_index，
-   不维护的生产方会表现成"窗永远填不满"——响亮，不是静默拼假窗）。
+8. 断（帧头 `disc` ∨ 跳号——只有 `n_samples > 0` 的帧才谈跳号，老帧头 /
+   `feed_tap` 注入没有轴 ∨ 口通道数变 ∨ 选列或触发源下标够不着）→ 清环
+   （`contig = 0`、环内容作废）、`pending = None`、`prev = 未知`；**已切好、在等
+   刷新点的 `captured` 留着**（它是完整的一窗）；之后要重新攒满（无触发时也要攒
+   满一窗才出）。**没有触发的 window 模式同样清环**（拍板 ②：与 stream 一致；
+   SDK 按约定维护 sample_index，不维护的生产方会表现成"窗永远填不满"——响亮，
+   不是静默拼假窗）。
 9. `pre = round(position × window_samples)`，`post = window_samples − pre`。
    position = 1 时 post = 0：触发拍到齐即切窗，允许。
 
 ### 3.4 run / stop / single（三种模式都认）
 
-- stopped：`feed` 对这个 tap 直接返回（不写环、不出帧）；环和 `captured` 留着。
-- run：清环、`pending = None`、`prev = 未知`、re-arm；**清环**是因为停了一段再跑，
-  旧样本和新样本之间隔着一段不存在的时间。single = run + 捕一次。
+- stopped：`feed` 对这个 tap 直接返回（不写环、不出帧）；环留着。stop 那一刻
+  stream 累加器里有货就带 STOPPED 位冲出去；window 模式里切好、还没到刷新点的
+  `captured` 同样带 STOPPED 冲出（它比屏幕上那窗新，示波器的 Stop 显示的是最
+  后一次采集）。
+- run：清环、`pending = None`、`captured = None`、`prev = 未知`、re-arm，并让下一
+  帧带 DISCONTINUITY；**清环**是因为停了一段再跑，旧样本和新样本之间隔着一段不
+  存在的时间。`single` 命令 = run + 下一帧发完就停（三种模式都认；window 带触发
+  时 = 捕一次）。
+- `set_tap` 换 trigger：等待中的捕获与比较态作废；`oneshot` 按**新**配置重算
+  （从 Single 换到 Auto 要清掉，否则下一帧带 STOPPED 把 tap 停了）。
 - 状态 `TapState { running, armed, trig_mode: Option<TrigMode>, triggers: u64,
   stopped_by: Option<"user"|"single"> }`，`create_tap`/`set_tap`/`tap_control` 应答
   都带；`list_taps` 逐 tap 报 `{tap_id, port_id, config, state}`。
@@ -146,16 +171,28 @@ window 帧的 `timestamp_ns` 仍是完成这一窗的那个 payload 的 t0（今
 
 | 方法 | 参数 | 应答 |
 |---|---|---|
-| `create_tap` | `{port_id, config}` | `{tap_id, channels: [{index, column: string\|null, group}], state}` |
-| `set_tap` | `{tap_id, config}` | `{channels, state, rebuilt: bool}` |
+| `create_tap` | `{port_id, config, columns?, column_groups?}` | `{tap_id, channels: [{index, column: string\|null, group}], port_channels: n\|null, state}` |
+| `set_tap` | `{tap_id, config, columns?, column_groups?}` | `{channels, port_channels, state, rebuilt: bool}` |
 | `tap_control` | `{tap_id, cmd: "run"\|"stop"\|"single"}` | `{state}` |
 | `remove_tap` | `{tap_id}` | `{ok}` |
-| `list_taps` | — | `{taps: [{tap_id, port_id, config, state}]}` |
+| `list_taps` | — | `{taps: [{tap_id, port_id, config, state, channels, port_channels}]}` |
 
 `channels` 应答是解析结果：每个发出去的通道来自口的哪个下标、哪一列、哪一组（无
-契约的口 column = null、group = 0）。前端拿它给图例分组配色，不再按
-`resolveColumns(port, nCh)` 假设 nCh = 组数 × 列数。`config` 先 `validate()`，错
-误原样回给调用方。`feed_tap`（注入）照旧按 port_id 喂，广播每个出帧。
+契约的口 column = null、group = 0），按口最近一次见到的通道数展开；`port_channels`
+说这个数是多少（null = 口还没出过数据，展开是按一组的假设）。前端拿它给图例分组
+配色，不再按 `resolveColumns(port, nCh)` 假设 nCh = 组数 × 列数。`config` 先
+`validate()`，错误原样回给调用方。
+
+**消费口的契约**：它是父容器在快照里沿连线补的（`resolve_consumer_columns`），子
+壳体自己不知道。所以 `create_tap` / `set_tap` 接受可选的 `columns` /
+`column_groups`（`PortDescriptor` 同形），**只在本壳体的口没声明列时采用**，本壳
+体声明了的以本壳体为准；前端从快照里的口描述子带上，`set_tap` 也要再带。不带
+时消费口上的 `{column: …}` 会被拒（"port has no column contract — refer to
+channels by index (@n)"）。传进来的契约是调用方的主张，帧宽与它不自洽时按 3.1
+"布局不合"处理。
+
+`feed_tap`（注入）照旧按 port_id 喂，广播每个出帧；参数加可选 `disc`，应答加
+`frames` 数组（同口多 tap），旧的 `frame` 字段保留为首帧。
 
 ### 3.7 第二步（不挡触发，可后做）：按连接过滤 + 断线回收
 

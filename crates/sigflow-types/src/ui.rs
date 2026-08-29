@@ -136,8 +136,11 @@ impl Default for Layout {
 ///
 /// **几何** = `mode` + `window_samples` + `channels`：三者决定环的布局，改了
 /// 必须重建（攒的窗丢掉，见 [`TapConfig::same_geometry`]）；其余项
-/// （`refresh_hz` / `stats` / `trigger`）就地生效。run/stop 不在这里——那是这
-/// 个观察者的运行态，不是声明。
+/// （`refresh_hz` / `stats` / `trigger`）就地生效；换掉 trigger 时等待中的捕获
+/// 和比较态作废，single 的一次性也随新模式重算。run/stop 不在这里——那是这个
+/// 观察者的运行态，不是声明：stop 时 stream 累加器里的样本带 STOPPED 位冲出，
+/// run 之后第一帧带 DISCONTINUITY（停着的那段时间不存在）；`single` 命令 =
+/// run + 下一帧发完就停，三种模式都认。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ts", derive(TS))]
 pub struct TapConfig {
@@ -253,8 +256,9 @@ impl std::str::FromStr for TapMode {
 ///
 /// - 按列契约的 id：`{ column = "iq" }`；有 `repeat_by` 的口可带组序（0 起，
 ///   同 `column_groups.label` 的 `{i}`）：`{ column = "iq", group = 2 }`。
-///   选列时不带组序 = 每组都要；做触发源时多组口必须带组序（源只能是一个
-///   通道，壳体拿描述子校验）。
+///   选列时不带组序 = 每组都要——组数只有帧知道（口通道数 ÷ 组内列数），壳体
+///   到 feed 时按帧宽展开。做触发源时，口只要**声明了** `column_groups` 就必须
+///   带组序（源只能是一个通道；按声明判，不看运行时几组）。
 /// - 按通道下标：`{ channel = 3 }`——给没有列契约的口；有契约的口也认，但那
 ///   就回到了"口加一列就错位"的老路，声明里别这么写。
 ///
@@ -345,7 +349,11 @@ impl std::fmt::Display for ColumnRef {
 ///   armed = 连续段已攒够 pre 拍 ∧ 没有等待中的捕获 ∧ 距上次触发拍 ≥
 ///   `holdoff_samples` ∧ running。触发在拍 t：post 拍到齐那一刻切窗
 ///   `[t − pre, t + post)`——不等刷新 tick，等了环会把预触发段冲掉。
-/// - 断（帧头声明的 / 跳号 / 通道数变）清环、取消等待中的捕获、重新攒 pre。
+///   **触发拍本身算 post 的第一拍**：帧上 `trig_offset = pre ∈ [0, window]`；
+///   position = 1 时 post = 0，触发拍不在窗里、T 标记在右缘。
+/// - 断（帧头声明的 / 跳号 / 通道数变 / 选列或触发源的下标在这个布局里够
+///   不着）清环、取消**等待中**的捕获、重新攒 pre；已经切好、在等刷新点的那
+///   一窗是完整的，照发。下标够不着不是错误，是"这个布局下什么都不发"。
 /// - normal / auto 出帧按 `refresh_hz` 截流，一个周期内多次触发只留最新一窗；
 ///   single 立刻出帧，然后 tap 自动 stopped（那一帧带 STOPPED 位）。
 /// - auto：running、没有等待中的捕获、且连续 2 个窗长没触发 → 按 refresh 发
