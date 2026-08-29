@@ -255,7 +255,9 @@ sigflow-cli widget bind scope_iq port:rotor --mode window --window 400 --refresh
 - 时间轴：TRIGGERED 帧 t=0 在 `trigOffset`，前负后正；自由跑 / stream 右缘为 0。
 - 逐通道刻度：每通道 `{perDiv, offset, linked}`，8 格网格；初始按通道自适应到 6
   格、1-2-5 步进；**缺省按契约 `unit` 共享**（同 unit 的列同一刻度），无契约全
-  体共享；单通道可解锁。活动通道（一个或没有）：Y 沟槽滚轮/拖只动活动通道，没
+  体共享；有契约但没写 unit 的列**各自独立**——两列能不能比，只有共同的 unit 说
+  了算，没声明就不推断（`count` 和 `miss_total` 都没 unit 不等于它们同一把尺）；
+  单通道可解锁。活动通道（一个或没有）：Y 沟槽滚轮/拖只动活动通道，没
   有活动通道动全体；双击重置。通道状态行 `iq  50 mA/div  ↕0  AC` 代替轴上标数。
   `y_min/y_max` 都给了 = 所有通道初始锁到同一量程。
 - DC/AC：AC = 减本帧均值（stream 减可见跨度均值）；测量/光标读耦合后的值并标
@@ -275,8 +277,13 @@ sigflow-cli widget bind scope_iq port:rotor --mode window --window 400 --refresh
 
 输入：一条通道在门内的样本（耦合后）、可选 `dt`（秒/拍，来自 declared_rate_hz）。
 - 垂直：`max`、`min`、`pkpk`；`top/base` 直方图法（100 桶，mid = (max+min)/2 之
-  上的众数 = top、之下 = base）；`amplitude = top − base`；`mean`、`rms`；有 ≥1
-  整周期时 `cycMean`/`cycRms`（首个上升沿到最后一个上升沿之间）。NaN 跳过。
+  上的众数 = top、之下 = base）——**众数不明显就回落到 max/min**（IEEE 181 的
+  做法：众数桶的计数不到该半边平均桶计数的 2 倍，就当没有平顶）。锯齿 / 三角
+  （pwm 计数器、三角载波——正是这套控件要看的信号）的直方图是平的，不回落的话
+  top 落在 mid 附近、amplitude 只剩 pk-pk 的一半，mid 电平跟着错、duty 从 0.5
+  变成 0.75；正弦在极值处有明显众数（≈ 6 倍于平均桶），不受影响。
+  `amplitude = top − base`；`mean`、`rms`；有 ≥1 整周期时 `cycMean`/`cycRms`
+  （首个上升沿到最后一个上升沿之间）。NaN 跳过。
 - 水平：`mid = (top+base)/2`，迟滞 ±10% amplitude 的状态机找沿，沿位置在两拍间
   线性插值；`period` = 相邻同向沿间距均值 + `cycles` 数；`freq = 1/period`；
   `posWidth`/`negWidth`；`duty`；`rise`/`fall` = 10%→90%（对 base/top）。NaN 拍
