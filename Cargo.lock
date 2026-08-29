@@ -637,6 +637,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sigflow-plugin-sig-gen"
+version = "0.1.0"
+dependencies = [
+ "sigflow-plugin-sdk",
+ "sigflow-types",
+ "toml",
+]
+
+[[package]]
 name = "sigflow-plugin-sine-generator"
 version = "0.1.0"
 dependencies = [

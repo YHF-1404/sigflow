@@ -1,0 +1,158 @@
+# sigflow.core.sig_gen —— 示波器验收与压测用的测试源：正弦 / 方波 / 三角 / 锯齿 /
+# 脉冲 / 噪声，fs 可到 100 MS/s，1..16 通道，f32 或 i16。不依赖任何仿真能否连续实时。
+#
+# 两个生产口，一次只有一个在发（`dtype` 参数选）：口的 dtype 是静态声明，不能在
+# 运行时改，所以 f32 和 i16 各一个口、各自说真话。i16 口的列带 scale = 1/32768：
+# 码 → 伏，满量程 ±1 V（amplitude_v + dc_offset_v 超出就削顶）。
+#
+# 通道数是运行时参数，列契约用 `repeat_by` 表达：一列 `v` 按组重复，组数 = 帧宽
+# ÷ 1，只有帧知道。fs 也是参数，所以**不声明 declared_rate_hz**——每一帧带
+# sfrate01 注解说实际率；改 fs = 新采样轴，下一帧带不连续标记（gap 0）。
+#
+# 不声明 negotiable（协商是二期）：示波器超预算时靠它验入口峰值检测抽取。
+#
+# 出帧节奏按墙钟：每个 1 ms tick 只发到"此刻该存在"的样本数，sample_index/t0 是真
+# 时间；帧上限 2 MiB = 4 通道 f32 100 MS/s 一个 tick 的量（1.6 MB）加余量。数据段按
+# 帧上限 × 订阅数 × 缓冲深度预留——这个口想要 max_subscribers = 2（等壳体认这条）。
+#
+# 动作：inject_gap 跳过 gap_samples 拍（像真丢样本：index 跳、帧头带断与 gap），
+# inject_glitch 让下一帧第一拍 ch0 = glitch_v（1 拍宽的毛刺，验全景视图上峰值检测
+# 有没有把它留住），reset_phase 各通道相位回到起点。
+name = "sigflow.core.sig_gen"
+version = "0.1.0"
+category = "compute"
+
+[runtime]
+type = "native"
+library = "libsigflow_plugin_sig_gen.so"
+entry = "sigflow_plugin_create"
+
+[[ports]]
+id = "f32"
+direction = "producer"
+semantic_type = { kind = "timeseries.signal", dtype = "f32", clock_domain = "host_monotonic" }
+max_frame_bytes = 2097152
+max_subscribers = 2
+column_groups = { repeat_by = "channels", label = "ch{i}" }
+
+[[ports.columns]]
+id = "v"
+label = "v"
+unit = "V"
+
+[[ports]]
+id = "i16"
+direction = "producer"
+semantic_type = { kind = "timeseries.signal", dtype = "i16", clock_domain = "host_monotonic" }
+max_frame_bytes = 2097152
+max_subscribers = 2
+column_groups = { repeat_by = "channels", label = "ch{i}" }
+
+[[ports.columns]]
+id = "v"
+label = "v"
+unit = "V"
+scale = 0.000030517578125   # 1/32768：码 → 伏，满量程 ±1 V
+
+[[parameters]]
+id = "dtype"
+param_type = "string"
+default = { string = "f32" }
+hot_change = false
+label = "Output port: f32 | i16"
+
+[[parameters]]
+id = "fs_hz"
+param_type = "f64"
+range = { f64_range = { min = 1000.0, max = 100000000.0 } }
+default = { f64 = 1000000.0 }
+unit = "Hz"
+label = "Sample rate (changing it starts a new sample axis)"
+
+[[parameters]]
+id = "channels"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 16 } }
+default = { u32 = 1 }
+label = "Channels"
+
+[[parameters]]
+id = "waveforms"
+param_type = "string"
+default = { string = "sine" }
+label = "Per-channel waveform, comma-separated (sine|square|triangle|ramp|pulse|noise; cycles if shorter)"
+
+[[parameters]]
+id = "freq_hz"
+param_type = "f64"
+range = { f64_range = { min = 0.001, max = 50000000.0 } }
+default = { f64 = 1000.0 }
+unit = "Hz"
+label = "Waveform frequency"
+
+[[parameters]]
+id = "amplitude_v"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 1.0 } }
+default = { f64 = 0.5 }
+unit = "V"
+label = "Amplitude"
+
+[[parameters]]
+id = "dc_offset_v"
+param_type = "f64"
+range = { f64_range = { min = -1.0, max = 1.0 } }
+default = { f64 = 0.0 }
+unit = "V"
+label = "DC offset"
+
+[[parameters]]
+id = "duty"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 1.0 } }
+default = { f64 = 0.5 }
+label = "Duty (square / pulse high fraction)"
+
+[[parameters]]
+id = "phase_step_deg"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 360.0 } }
+default = { f64 = 90.0 }
+unit = "deg"
+label = "Phase offset between consecutive channels"
+
+[[parameters]]
+id = "noise_v"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 1.0 } }
+default = { f64 = 0.0 }
+unit = "V"
+label = "Added uniform noise amplitude"
+
+[[parameters]]
+id = "gap_samples"
+param_type = "u32"
+range = { u32_range = { min = 1, max = 100000000 } }
+default = { u32 = 1000 }
+unit = "samples"
+label = "Samples skipped by inject_gap"
+
+[[parameters]]
+id = "glitch_v"
+param_type = "f64"
+range = { f64_range = { min = -1.0, max = 1.0 } }
+default = { f64 = 1.0 }
+unit = "V"
+label = "Value of the one-sample glitch injected by inject_glitch (ch0)"
+
+[[actions]]
+id = "inject_gap"
+label = "Skip gap_samples samples (discontinuity with gap)"
+
+[[actions]]
+id = "inject_glitch"
+label = "One-sample glitch on ch0 in the next frame"
+
+[[actions]]
+id = "reset_phase"
+label = "Reset all channel phases"
