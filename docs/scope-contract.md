@@ -87,6 +87,10 @@ TOML 形状在 `ScopeConfig` 的文档注释里。要点：
 - 视图帧的 `kind` 加了 2 = 原始 (min, max) 对（对存储放大到每像素不足一拍时）。
 - 口在对 / 非对之间切换而环布局不合（decim = 1）时帧被丢并计入 `dropped_scans`
   ——不会静默按错布局写。
+- 处理线程 → 入环线程之间是 **64 MiB 有界暂存队列**：满了丢整帧、计入 `dropped_scans`，
+  下一帧当断（触发的连续段清、breaks 记锚点）——不是静默合并，也不背压到控制环。
+  四线程：处理（memcpy 进队列）/ 入环（抽列 · 抽取 · 写环）/ 采集（金字塔 · 触发 · 密度 ·
+  推帧）/ RPC；入环与采集线程不碰 tokio，出口只有 sink。
 
 ## 5. 控件声明
 
@@ -110,14 +114,16 @@ TOML 形状在 `ScopeConfig` 的文档注释里。要点：
 - ✅ 1 MS/s × 2 ch f32、10 kHz、normal 触发 + persist：view 20 Hz、density 两通道、meas
   freq 10000.0 / period 100.0 µs；触发在窗中点、frac 1.000（10 kHz @ 1 MS/s 正好采到
   0）；分段 256 条；stop / single / 回翻 / set 不重建 / 改深度重建全过。
-- ⏳ 4 ch f32 100 MS/s（1.6 GB/s → 8:1 峰值检测存 12.5 MS/s）：抽取比对、无丢拍、
-  PEAK_STORED 对，但入环只有 ≈ 20.7 MS/s。**不是生成也不是入环的算力**（sig-gen 纯生
-  成 f32×4 正弦 1054 M 样本/s ≈ 0.95 ns/样本；RingWriter 8:1 抽取 528 MS/s）——是壳体
-  两条结构限制：`processing.rs` 里插件输出缓冲固定 `MAX_OUTPUT_BUFFER_SIZE = 1 MiB`
-  不看口声明的 `max_frame_bytes`（4 ch f32 一帧最多 65536 拍），且源节点的 tick 是
-  "干完活再 sleep 1 ms"，周期 = 工作时长 + 1 ms。修法归 sigflow-core：输出缓冲按
-  `max_frame_bytes` 开、源 tick 用固定周期的 interval、必要时把入口抽取挪到采集线程。
-  没连消费方时壳体不发布（`has_publisher` 为假直接跳过），没有共享内存的白拷贝。
+- ✅ 4 ch f32 100 MS/s（1.6 GB/s → 8:1 峰值检测存 12.5 MS/s）：sigflow-core 1961b9e 之后
+  存 12.5 MS/s 稳、丢拍 0、触发 10 万/s；入环线程 68%、采集线程 49%、处理线程 19%。
+  之前只到 20.7 MS/s 的原因**不是生成也不是入环的算力**（sig-gen 纯生成 f32×4 正弦
+  1054 M 样本/s ≈ 0.95 ns/样本；RingWriter 8:1 抽取 528 → 向量化后 676 MS/s），而是壳体
+  两条结构限制，已改：插件输出缓冲原来固定 1 MiB 不看 `max_frame_bytes`（现在按声明
+  开，只增不减）；源节点 tick 原来是"干完再 sleep 1 ms"（现在固定 1 kHz interval）。
+  改完 87 MS/s（处理线程上生成 + 抽取 ≈ 1.14 核卡住），再把入口抽取挪出处理线程
+  （feed 只 memcpy 进 64 MiB 有界暂存队列，独立入环线程抽列/抽取/写环，采集线程只做
+  金字塔/触发/密度/推帧）才到 100。没连消费方时壳体不发布（`has_publisher` 为假直接
+  跳过），没有共享内存的白拷贝。
 
 ## 7. 归属
 
