@@ -819,7 +819,52 @@ mod tests {
         assert!(f32s(samples).iter().take(10).all(|x| *x == 1.0));
     }
 
-    /// 100 MS/s 一核跑不跑得动——`cargo test --release -- --ignored throughput`。
+    /// 纯生成的吞吐（不含壳体的发布拷贝与示波器入环）；
+    /// `cargo test --release -- --ignored throughput --nocapture`。
+    fn bench(label: &str, i16: bool, ch: u32, waves: &str) -> f64 {
+        let mut g = gen();
+        g.set_fs_at(1e8, 0);
+        g.set_param(
+            "dtype",
+            &ParamValue::String(if i16 { "i16" } else { "f32" }.into()),
+        );
+        g.set_param("channels", &ParamValue::U32(ch));
+        g.set_param("waveforms", &ParamValue::String(waves.into()));
+        let cap = 2 << 20;
+        let mut b0 = vec![0u8; cap];
+        let mut b1 = vec![0u8; cap];
+        let t = std::time::Instant::now();
+        let mut total = 0u64;
+        let mut now = 0i64;
+        while total < 100_000_000 {
+            now += 1_000_000;
+            let mut outs = [FrameOut::new(&mut b0), FrameOut::new(&mut b1)];
+            g.generate(now, &mut outs);
+            total += u64::from(outs[if i16 { PORT_I16 } else { PORT_F32 }].header.n_samples);
+        }
+        let dt = t.elapsed().as_secs_f64();
+        let ms_per_s = total as f64 / dt / 1e6;
+        eprintln!(
+            "{label}: {total} scans × {ch} ch in {dt:.3} s = {ms_per_s:.1} MS/s per channel, {:.0} M samples/s aggregate",
+            ms_per_s * ch as f64
+        );
+        ms_per_s
+    }
+
+    #[test]
+    #[ignore]
+    fn throughput_f32_4ch_sine() {
+        // 验收 3 的组合：4 ch f32 100 MS/s（正弦是最贵的波形：查表 + 插值）
+        assert!(bench("f32 4ch sine", false, 4, "sine") >= 100.0);
+    }
+
+    #[test]
+    #[ignore]
+    fn throughput_i16_1ch_sine() {
+        // 验收 1 的组合：1 ch i16 100 MS/s
+        assert!(bench("i16 1ch sine", true, 1, "sine") >= 100.0);
+    }
+
     #[test]
     #[ignore]
     fn throughput_100ms_per_s_i16_4ch() {

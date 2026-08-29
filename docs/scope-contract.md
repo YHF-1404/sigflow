@@ -102,6 +102,23 @@ TOML 形状在 `ScopeConfig` 的文档注释里。要点：
 `negotiable`**（协商二期），超预算时靠它验入口抽取。验收与压测（100 MS/s、8 GB）都以
 它为源，不依赖 dex 仿真能否连续实时。
 
+## 6.1 验收记录（sigflow-core feat/scope a4a5c67 + sig-gen 5b71dfa，release，假 HOME/9502，i7 级桌面）
+
+- ✅ 单通道 i16 100 MS/s、8 GB 深度、连续 60 s：入环 100.0 MS/s 稳、丢拍 0；1 MHz 正弦
+  上沿触发 10 万次/s（受 pre+post 重臂限）；环文件 6.46 GB（预算减金字塔）在 /dev/shm；
+  采集线程 ≈ 0.8 核；20 亿拍全景视图 RPC 5 ms、8 亿拍 2 ms。
+- ✅ 1 MS/s × 2 ch f32、10 kHz、normal 触发 + persist：view 20 Hz、density 两通道、meas
+  freq 10000.0 / period 100.0 µs；触发在窗中点、frac 1.000（10 kHz @ 1 MS/s 正好采到
+  0）；分段 256 条；stop / single / 回翻 / set 不重建 / 改深度重建全过。
+- ⏳ 4 ch f32 100 MS/s（1.6 GB/s → 8:1 峰值检测存 12.5 MS/s）：抽取比对、无丢拍、
+  PEAK_STORED 对，但入环只有 ≈ 20.7 MS/s。**不是生成也不是入环的算力**（sig-gen 纯生
+  成 f32×4 正弦 1054 M 样本/s ≈ 0.95 ns/样本；RingWriter 8:1 抽取 528 MS/s）——是壳体
+  两条结构限制：`processing.rs` 里插件输出缓冲固定 `MAX_OUTPUT_BUFFER_SIZE = 1 MiB`
+  不看口声明的 `max_frame_bytes`（4 ch f32 一帧最多 65536 拍），且源节点的 tick 是
+  "干完活再 sleep 1 ms"，周期 = 工作时长 + 1 ms。修法归 sigflow-core：输出缓冲按
+  `max_frame_bytes` 开、源 tick 用固定周期的 interval、必要时把入口抽取挪到采集线程。
+  没连消费方时壳体不发布（`has_publisher` 为假直接跳过），没有共享内存的白拷贝。
+
 ## 7. 归属
 
 - sigflow（本仓）：§1–§5 的类型与声明（已落）、§6 sig-gen。
