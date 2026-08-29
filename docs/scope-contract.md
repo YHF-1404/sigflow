@@ -91,17 +91,13 @@ TOML 形状在 `ScopeConfig` 的文档注释里。要点：
   样本连成竖段，斜率陡处才不是一串点（§6 的补充）。
 - `scope_state {scope_id}` → `{state}`：只拿运行态（触发/s、丢拍、写指针），控件按秒
   轮询状态行用；view 帧只带 flags，触发率不随帧走。
-- 单列多组的口（一根 `v` 分 N 路）每路一个色相，不走"同色相分深浅"——示波器的习惯；
-  多列口仍是色相 = 列、深浅 = 组。这条规则该住在 `traceColor`（scope-legend.ts）里让
-  waveform_chart 与 oscilloscope 一致，而不是控件各自判。
-- **待补（控件 e88d692 核出）**：view 帧每通道要带 AC 耦合用的均值（`ac_mean f32`，
-  DC 时 0）。契约说电平线画在源列的轴上、源列开了 AC 就画在 `level − mean`；均值只有
-  引擎知道，客户端拿不到就只能画在 `level` 处——AC 源列上电平线会偏一个均值。光标
-  处的通道读数同理要按耦合后的值。
-- 处理线程 → 入环线程之间是 **64 MiB 有界暂存队列**：满了丢整帧、计入 `dropped_scans`，
-  下一帧当断（触发的连续段清、breaks 记锚点）——不是静默合并，也不背压到控制环。
-  四线程：处理（memcpy 进队列）/ 入环（抽列 · 抽取 · 写环）/ 采集（金字塔 · 触发 · 密度 ·
-  推帧）/ RPC；入环与采集线程不碰 tokio，出口只有 sink。
+- view 帧每通道带 `ac_mean f32`（`[ch u32][kind u8][ac_mean f32][n u32][f32 × n]`，DC 为
+  0）：AC 耦合时引擎从样本里减掉的均值只有引擎知道，控件用它把电平线画在
+  `level − ac_mean`、拖电平时把均值加回去再 `scope_set`，光标处的通道读数也按它
+  算（sigflow-core 47c6c41 落地）。
+- 单列多组的色相规则住在 `traceColor(col, group, groups, ncols)`：`ncols === 1` 且
+  `1 < groups ≤ 8` → 每路一个色相，与单组时第 group 列同色；waveform_chart 与
+  oscilloscope 都经它取色（47c6c41）。
 
 ## 5. 控件声明
 
