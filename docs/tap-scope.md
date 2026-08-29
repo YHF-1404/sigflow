@@ -245,8 +245,14 @@ sigflow-cli widget bind scope_iq port:rotor --mode window --window 400 --refresh
 
 ### 5.2 WidgetView / ScopeChart
 
-- waveform_chart 走 `own`；tapKey 只含几何，`bind.tap` 的其余变化走
-  `handle.update`（否则回写绑定会触发重订阅，4096 窗 @200 Hz 要 20 s 重新填满）。
+- waveform_chart 走 `own`；句柄的键只含（路径, 口），`bind.tap` 的**一切**变化走
+  `handle.update`（几何变了壳体自己原地重建）——否则回写绑定会触发重订阅，
+  4096 窗 @200 Hz 要 20 s 重新填满。建句柄的 effect 只能依赖那个键和"契约到
+  了没"，绑定对象本身要 `untrack`：快照一刷新绑定对象就是新的，直接读它 effect
+  就重跑、句柄就重建，键设计得再窄也白搭。消费口的契约（快照里沿连线补的
+  columns/column_groups）要随每次 create/set 带上，且**跟着口描述子更新**：句柄
+  建立时描述子可能还没到，之后从面板开触发（源按列 id）时再带的必须是当时的
+  契约，不是建句柄那一刻的 null。
 - 触发 UI：右缘电平标记（画在源列的轴上；源列 AC 时画在 level − mean）、顶缘预
   触发 T 标记、面板（源/沿/电平/迟滞/释抑/模式；释抑在有 `declared_rate_hz` 时并
   排显示时间；"抗噪"一键 = 源列可见 pk-pk 的 5% 写进 hysteresis）；徽章
@@ -323,7 +329,9 @@ shell.rs：列 id 解析（含 group 展开、多组口触发源缺 group 拒、
 
 真口验收（dex 的 foc_sil，假 HOME + 独立端口，别碰 9500）：
 - rotor：`z` rising 0.5 触发 → 每窗触发点处 `z = 1`、`z_deg` 读数稳定；`iq` 电平
-  触发 normal 模式；两台示波器各选不同列，一台 stop 另一台照跑；
+  触发 normal 模式；两台示波器各选不同列，一台 stop 另一台照跑。**rotor 在监视
+  节点的消费口上是 200 Hz（5 ms/拍）**：窗 400 = 2 s、预触发 200 拍要 1 s 才
+  arm，几秒内只出一两帧不是 bug——验收脚本用 40 拍的窗；
 - pwm（frame 口）：测 `pwm_cnt` 周期 12.5 µs ⇒ 80 kHz；va/vb/vc 与载波同图；
 - stream 口 stop 后历史可翻、run 后从新样本起。
 
