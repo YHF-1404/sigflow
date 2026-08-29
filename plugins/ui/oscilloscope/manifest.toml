@@ -1,0 +1,37 @@
+# sigflow.ui.oscilloscope — 示波器（整页）。绑一个口；setup 全在绑定的 scope 段
+# （`bind.scope`，类型 sigflow-types `ui::ScopeConfig`，CLI
+# `widget bind <alias> port:<id> --scope-file setup.toml`）。config 只有 label：
+# 一台示波器的一切旋钮都是 setup，不是控件配置；UI 上拨的旋钮即时 `scope_set`、
+# 手势结束回写绑定——同一个旋钮，不另存一份。
+#
+# 它不是 tap。**示波器 = 生产口所在壳体里的一台采集引擎**（sigflow-core
+# docs/scope.md）：帧单次拷贝进 mmap 文件环（原生 dtype、按列分平面、16× min/max
+# 金字塔），独立线程做触发（迟滞 / 释抑 / 预触发 / 亚采样相位）、余辉密度、视图与
+# 测量；浏览器只拉视图（每像素列 min/max，已换算成物理量）和密度图——8 GB 深度与
+# 100 MS/s 都不经过 WebSocket。深存储、触发、测量、余辉、逐通道刻度都住在引擎里，
+# 前端只剩画法（插值、颜色查表、手势）。
+#
+# 字节预算（`budget_bytes_per_s`）超了：口声明了 `negotiable.rate_param` 就向生产
+# 方请求降率（回读 = 接受的率，帧带 sfrate01），否则入口峰值检测抽取、环按
+# (min, max) 对存——抽取比按存储字节算，UI 明说"fs → 存 fs（峰值 N:1）"。
+#
+# 只看波形、不要触发和深存储的用 waveform_chart（tap 订阅，选列、stream 历史）。
+#
+# 纯 manifest 包：壳体只读声明做绑定校验，前端负责渲染；[runtime] 是 schema
+# 必填项，widget.json 只是占位内容，永远不会被加载。
+name = "sigflow.ui.oscilloscope"
+version = "0.1.0"
+category = "ui_widget"
+
+[runtime]
+type = "native"
+library = "widget.json"
+entry = "unused"
+
+[widget]
+widget_type = "oscilloscope"
+presentation = "page"
+bindable_to = [{ kind = "port" }]
+
+[widget.config_schema.label]
+type = "string"

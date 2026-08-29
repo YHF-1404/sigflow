@@ -39,6 +39,17 @@ pub const FLAG_TRIG_INDEXED: u32 = 1 << 1;
 /// [`FrameOut::set_annotation`] to attach.
 pub const FLAG_ANNOTATED: u32 = 1 << 2;
 
+/// `flags` bit set when the payload is **peak-detect decimated**: every scan
+/// holds, for each column, a `(min, max)` pair interleaved — payload bytes =
+/// `n_samples × columns × 2 × elem`, and `n_samples` counts scans (pairs).
+/// The frame's rate (`declared_rate_hz` or the `sfrate01` annotation) is the
+/// rate **after** decimation. Producers emit this only when a consumer
+/// negotiated a lower rate (`PortDescriptor::negotiable`); such consumers must
+/// honour the flag — a scope stores the pairs, a tap forwards them as pairs —
+/// and never quietly keep one half. Non-signal columns (enum / bitfield /
+/// counter) carry `(min, max)` too: unequal means "changed within the bin".
+pub const FLAG_PEAK_PAIRS: u32 = 1 << 3;
+
 /// Parse an annotation blob (the trailing region of an annotated frame's
 /// payload) into its `(schema_id, bytes)`. Returns `None` if the blob is too
 /// short to hold the 8-byte schema id.
@@ -171,7 +182,7 @@ pub struct FrameHeader {
     /// Samples per channel in this frame.
     pub n_samples: u32,
     /// Bit flags; bit0 = [`FLAG_DISCONTINUITY`], bit1 = [`FLAG_TRIG_INDEXED`],
-    /// bit2 = [`FLAG_ANNOTATED`].
+    /// bit2 = [`FLAG_ANNOTATED`], bit3 = [`FLAG_PEAK_PAIRS`].
     pub flags: u32,
     /// When [`FLAG_ANNOTATED`] is set: byte length of the annotation blob that
     /// trails the sample payload (the blob is the last `annotation_len` bytes of
@@ -217,6 +228,15 @@ impl FrameHeader {
     /// Whether this frame carries a trailing annotation blob.
     pub fn is_annotated(&self) -> bool {
         self.flags & FLAG_ANNOTATED != 0
+    }
+
+    /// Whether the payload is peak-detect decimated `(min, max)` pairs.
+    pub fn is_peak_pairs(&self) -> bool {
+        self.flags & FLAG_PEAK_PAIRS != 0
+    }
+
+    pub fn set_peak_pairs(&mut self) {
+        self.flags |= FLAG_PEAK_PAIRS;
     }
 
     /// Split a payload buffer into `(samples, annotation_blob)` using this

@@ -242,6 +242,80 @@ pub struct PortDescriptor {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional, type = "number"))]
     pub max_frame_bytes: Option<u64>,
+    /// 这个口的输出能被消费方协商（示波器 / 录制器按字节预算请求降率）。
+    /// 没声明 = 不可协商，超预算的消费方自己在入口抽取。见 [`Negotiable`]。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub negotiable: Option<Negotiable>,
+}
+
+/// 生产口的协商钩子：声明哪个参数控制输出采样率，消费方通过普通 param RPC
+/// 写它。
+///
+/// - `rate_param`：f64 Hz 的 hot_change 参数。消费方写它请求的率；生产方就近
+///   取自己支持的率，**回读值 = 接受的率**，并且**每一帧带 `sfrate01` 注解**说
+///   实际率（帧是证人，回读只是应答）。降率只许峰值检测（(min, max) 对 + 帧头
+///   `FLAG_PEAK_PAIRS`）或均值，不许丢样本——那是混叠。
+/// - 声明了 `negotiable` 的口**不得**声明 `declared_rate_hz`：那条只给编译期常
+///   量，协商口的率是运行时的，两者互斥（[`PortDescriptor::validate`]）。
+/// - 声明了 `negotiable` 的口，其消费方必须认 `FLAG_PEAK_PAIRS`（示波器按对
+///   存；tap 原样以对传下去）。
+/// - 选列协商（生产方只算、只发子集）这一轮不定：帧只有一个注解槽，子集会让
+///   帧的列布局和契约分家，要有带列表的流注解才能做——二期随第一个实现它的
+///   生产方一起定。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub struct Negotiable {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub rate_param: Option<String>,
+}
+
+impl PortDescriptor {
+    /// 声明层面的自洽：dtype 认得、协商与声明率互斥、列 id 组内唯一、scale 不为 0。
+    pub fn validate(&self) -> Result<(), String> {
+        let dtype = self
+            .semantic_type
+            .dtype()
+            .map_err(|e| format!("port {}: {e}", self.id))?;
+        if self.negotiable.is_some() && self.declared_rate_hz.is_some() {
+            return Err(format!(
+                "port {}: negotiable and declared_rate_hz are mutually exclusive — a negotiated rate is a runtime value, declare it on the frames (sfrate01) instead",
+                self.id
+            ));
+        }
+        if let Some(r) = self.declared_rate_hz {
+            if !(r.is_finite() && r > 0.0) {
+                return Err(format!("port {}: declared_rate_hz must be > 0", self.id));
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        for c in &self.columns {
+            if !seen.insert(c.id.as_str()) {
+                return Err(format!("port {}: duplicate column id {:?}", self.id, c.id));
+            }
+            if let Some(s) = c.scale {
+                if !(s.is_finite() && s != 0.0) {
+                    return Err(format!(
+                        "port {}: column {} scale must be finite and non-zero",
+                        self.id, c.id
+                    ));
+                }
+            }
+            if let Some(o) = c.offset {
+                if !o.is_finite() {
+                    return Err(format!(
+                        "port {}: column {} offset must be finite",
+                        self.id, c.id
+                    ));
+                }
+            }
+            if (c.scale.is_some() || c.offset.is_some()) && !dtype.is_integer() {
+                // 浮点口写 scale/offset 不是错，只是罕见；不拦。
+            }
+        }
+        Ok(())
+    }
 }
 
 /// 列契约：一个多列交织口里，某一列是什么、怎么读。
@@ -296,6 +370,15 @@ pub struct ColumnDecl {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub unit: Option<String>,
+    /// 码 → 物理量：`物理量 = 码 × scale + offset`，缺省 1 / 0。整数 dtype 的口
+    /// （ADC 码）靠它们把 `unit`/`bound` 说成物理量；`decode`/`bits` 仍作用在码
+    /// 上。浮点口一般不写。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub scale: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub offset: Option<f64>,
     /// 默认读法——决定控件推断（曲线 / 徽章 / 灯 / 计数卡 / 量表）。
     #[serde(default)]
     pub kind: ColumnKind,

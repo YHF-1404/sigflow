@@ -58,6 +58,11 @@ pub struct WidgetBinding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub tap: Option<TapConfig>,
+    /// Only meaningful when `kind == Port` — 示波器的 setup（[`ScopeConfig`]）。
+    /// 一个口绑定要么是 tap（订阅）要么是 scope（采集引擎），按控件类型二选一。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub scope: Option<ScopeConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -118,29 +123,31 @@ impl Default for Layout {
     }
 }
 
-/// 一台示波器 = 一份 tap。
+/// 一条 tap = 一个观察者对一个口的订阅：按模式把样本摘给它。
 ///
-/// 一个口上可以开任意多份 tap，每份各自选列、各自触发、各自 run/stop——节点
-/// 把同一条采样轴上的量都放进一个口并声明列契约就够了，不必为了分开看而拆口。
-/// 配置持久化在绑定它的控件的 `bind.tap` 里（node.toml），也就是 CLI
-/// `widget bind` 的 `--window/--refresh/--mode/--channels/--trig-*` 写的那一份；
-/// 绑定里没有 tap 段时前端按控件类型兜底。
+/// 一个口上可以开任意多份 tap，每份自己选列（那是带宽）。**触发、深存储、
+/// 测量不在这里**——那些是示波器的事（[`ScopeConfig`]：住在生产口所在壳体
+/// 里的独立采集引擎，见 sigflow-core `docs/scope.md`）。配置持久化在绑定它的
+/// 控件的 `bind.tap` 里（node.toml），也就是 CLI `widget bind` 的
+/// `--window/--refresh/--mode/--channels` 写的那一份；绑定里没有 tap 段时前端
+/// 按控件类型兜底。
 ///
 /// 三种模式（[`TapMode`]；`mode` 缺省由 `window_samples` 推：0 = frame，
 /// > 0 = window）：
-/// - window：最近 N 拍的环，按 `refresh_hz` 出窗；带 [`TapConfig::trigger`]
-///   时窗对齐到触发拍。
-/// - frame：生产方每帧原样转发——生产方自己开窗的口（示波器窗、热图、估计）。
+/// - window：最近 N 拍的环，按 `refresh_hz` 出窗（无触发；要触发用示波器）。
+/// - frame：生产方每帧原样转发——生产方自己开窗的口（热图、估计）。
 /// - stream：每一拍都发，按 `refresh_hz` 打包并带样本轴元数据（首样本序号 /
 ///   通道数 / 断），客户端自己拼一段可回翻、带断标的历史。
 ///
 /// **几何** = `mode` + `window_samples` + `channels`：三者决定环的布局，改了
 /// 必须重建（攒的窗丢掉，见 [`TapConfig::same_geometry`]）；其余项
-/// （`refresh_hz` / `stats` / `trigger`）就地生效；换掉 trigger 时等待中的捕获
-/// 和比较态作废，single 的一次性也随新模式重算。run/stop 不在这里——那是这个
-/// 观察者的运行态，不是声明：stop 时 stream 累加器里的样本带 STOPPED 位冲出，
-/// run 之后第一帧带 DISCONTINUITY（停着的那段时间不存在）；`single` 命令 =
-/// run + 下一帧发完就停，三种模式都认。
+/// （`refresh_hz` / `stats`）就地生效。run/stop 是观察者的运行态，不是声明：
+/// stop 时 stream 累加器里的样本带 STOPPED 位冲出，run 之后第一帧带
+/// DISCONTINUITY（停着的那段时间不存在）。
+///
+/// 整数 dtype 的口（见 [`crate::semantic::Dtype`]）tap 按列的 `scale`/`offset`
+/// 换成物理量 f32 再发，线协议不变；带 `FLAG_PEAK_PAIRS` 的帧原样以对传下去
+/// （`TAP_FLAG_PEAK_PAIRS`），不许只取一半。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ts", derive(TS))]
 pub struct TapConfig {
@@ -150,8 +157,8 @@ pub struct TapConfig {
     pub refresh_hz: f32,
     /// Built-in statistics to compute: `rms`, `peak`, `min`, `max`, `mean`.
     ///
-    /// 它是把发出去的样本**所有列交织在一起**算的，多列口上没有意义；示波器
-    /// 的测量在浏览器按列算。留着给 CLI / 测试。
+    /// 它是把发出去的样本**所有列交织在一起**算的，多列口上没有意义。留着给
+    /// CLI / 测试。
     #[serde(default)]
     pub stats: Vec<String>,
     /// Explicit mode override. `None` keeps the `window_samples` heuristic.
@@ -167,11 +174,6 @@ pub struct TapConfig {
     /// window 模式每次刷新都拷整窗，25 列只看 5 列时线上的字节差 5 倍。
     #[serde(default)]
     pub channels: Vec<ColumnRef>,
-    /// 触发。只对 window 模式有意义——frame / stream 带触发校验不过：生产方
-    /// 自己开窗的口壳体没法重对齐，装作能触发就是藏问题。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub trigger: Option<TapTrigger>,
 }
 
 impl TapConfig {
@@ -193,26 +195,16 @@ impl TapConfig {
     }
 
     /// 声明层面的自洽性——不需要口描述子就能查的那部分。列 id 能不能在口上
-    /// 找到、触发源在多组口上有没有说清是哪一组，都要到壳体拿着描述子才知道。
+    /// 找到，要到壳体拿着描述子才知道。
     pub fn validate(&self) -> Result<(), String> {
         if !(self.refresh_hz.is_finite() && self.refresh_hz > 0.0) {
             return Err(format!("refresh_hz must be > 0 (got {})", self.refresh_hz));
         }
-        let mode = self.effective_mode();
-        if mode == TapMode::Window && self.window_samples == 0 {
+        if self.effective_mode() == TapMode::Window && self.window_samples == 0 {
             return Err("window mode needs window_samples > 0".to_string());
         }
         for c in &self.channels {
             c.validate().map_err(|e| format!("channels: {e}"))?;
-        }
-        if let Some(t) = &self.trigger {
-            if mode != TapMode::Window {
-                return Err(format!(
-                    "trigger only applies to window mode (this tap is {})",
-                    mode.as_str()
-                ));
-            }
-            t.validate().map_err(|e| format!("trigger: {e}"))?;
         }
         Ok(())
     }
@@ -287,6 +279,28 @@ impl ColumnRef {
             _ => Ok(()),
         }
     }
+
+    /// `self` 是不是在选列集 `sel` 里。空集 = 整口，什么都在。不带组序的选列
+    /// 引用覆盖该列的所有组。
+    pub fn selected_in(&self, sel: &[ColumnRef]) -> bool {
+        if sel.is_empty() {
+            return true;
+        }
+        sel.iter().any(|s| match (s, self) {
+            (
+                ColumnRef::Column {
+                    column: a,
+                    group: ga,
+                },
+                ColumnRef::Column {
+                    column: b,
+                    group: gb,
+                },
+            ) => a == b && (ga.is_none() || ga == gb),
+            (ColumnRef::Channel { channel: a }, ColumnRef::Channel { channel: b }) => a == b,
+            _ => false,
+        })
+    }
 }
 
 impl std::str::FromStr for ColumnRef {
@@ -337,57 +351,50 @@ impl std::fmt::Display for ColumnRef {
     }
 }
 
-/// 示波器触发。住在 tap 里——它决定"哪一窗给你"，不是画法。
+// ---------------------------------------------------------------------------
+// 示波器 setup（persisted in the binding as `bind.scope`）
+// ---------------------------------------------------------------------------
+
+/// 示波器触发。住在采集引擎里——它决定"哪一窗给你"，不是画法。
 ///
-/// 壳体按 scan 逐拍跑（一次 feed 可含多拍）：
-/// - 源列在 feed 时读整行，所以**不要求在 `channels` 里**（示波器本就可以
-///   外触发）。
-/// - 电平与 tap 收到的原始值比。显示侧的 AC 耦合只是把画法平移，不改比较；
-///   电平线画在源列的轴上，源列开了 AC 就画在 `level − mean` 处。
-/// - NaN 拍透明：不触发、不更新比较状态（NaN = 本拍不适用）。
-/// - `pre = round(position × window_samples)`，`post = window_samples − pre`。
-///   armed = 连续段已攒够 pre 拍 ∧ 没有等待中的捕获 ∧ 距上次触发拍 ≥
-///   `holdoff_samples` ∧ running。触发在拍 t：post 拍到齐那一刻切窗
-///   `[t − pre, t + post)`——不等刷新 tick，等了环会把预触发段冲掉。
-///   **触发拍本身算 post 的第一拍**：帧上 `trig_offset = pre ∈ [0, window]`；
-///   position = 1 时 post = 0，触发拍不在窗里、T 标记在右缘。
-/// - 断（帧头声明的 / 跳号 / 通道数变 / 选列或触发源的下标在这个布局里够
-///   不着）清环、取消**等待中**的捕获、重新攒 pre；已经切好、在等刷新点的那
-///   一窗是完整的，照发。下标够不着不是错误，是"这个布局下什么都不发"。
-/// - normal / auto 出帧按 `refresh_hz` 截流，一个周期内多次触发只留最新一窗；
-///   single 立刻出帧，然后 tap 自动 stopped（那一帧带 STOPPED 位）。
-/// - auto：running、没有等待中的捕获、且连续 2 个窗长没触发 → 按 refresh 发
-///   自由跑的窗（帧上不带 TRIGGERED 位）。"2 个窗长"写死。
+/// 引擎在原生 dtype 上逐拍跑（电平换成码），语义：
+/// - 源列在写环时读整行，所以**不要求在 `channels` 里**（外触发）。
+/// - 电平与原始物理量比；显示侧的 AC 耦合只是把画法平移，不改比较。
+/// - NaN 拍透明：不触发、不更新比较状态。
+/// - 比较态：rising 时 `v ≤ level − h/2` 进 Low、`v ≥ level + h/2` 进 High，
+///   带内保持；h = 0 时就是 `v < level` / `v ≥ level`。跨越 = 比较态按沿翻转。
+/// - armed = 连续段已攒够 pre 拍 ∧ 没有等待中的捕获 ∧ 距上次触发拍 ≥
+///   `holdoff_samples` ∧ running。触发拍本身算 post 的第一拍；亚采样相位
+///   `frac = (level − v[t−1]) / (v[t] − v[t−1])` 随记录存，叠余辉时按它平移。
+/// - 断（帧头声明的 / 跳号 / 布局变）清连续段、取消等待中的捕获。
+/// - 触发点在屏幕的位置是时基的事（[`Timebase::position`]），这里没有。
+/// - 峰值检测存储时 rising 在 max 平面上跑、falling 在 min 平面上跑。
+///
+/// `kind`：一期只有 edge；pulse（正/负脉宽 >、<、区间）和 window（进/出带）
+/// 二期加可选字段，声明层现在就认这三个名字。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ts", derive(TS))]
-pub struct TapTrigger {
+pub struct ScopeTrigger {
+    #[serde(default)]
+    pub kind: TrigKind,
     pub source: ColumnRef,
-    /// 信号原单位。
+    /// 物理量单位（整数口按列的 scale/offset 换算后的量）。
     pub level: f64,
     #[serde(default)]
     pub slope: TrigSlope,
-    /// 迟滞带宽（信号单位，≥ 0）。rising：进 Low 要 `v ≤ level − h/2`，触发要
-    /// `v ≥ level + h/2`；falling 对称；either 两边都认。缺省 0——单位不知道
-    /// 就选不出一个非零缺省；UI 给"抗噪 = 源列可见 pk-pk 的 5%"一键写入。
+    /// 迟滞带宽（物理量，≥ 0）。缺省 0——单位不知道就选不出一个非零缺省；
+    /// UI 给"抗噪 = 源列可见 pk-pk 的 5%"一键写入。
     #[serde(default)]
     pub hysteresis: f64,
-    /// 释抑：触发后至少再过这么多拍才能再触发。按拍数——与 `window_samples`
-    /// 同度量；率随参数变的口（rotor）时间换算不出来。UI 有声明的率时并排显
-    /// 示时间。
+    /// 释抑：触发后至少再过这么多拍才能再触发。按拍数——与深度、跨度同度量；
+    /// UI 有率时并排显示时间。
     #[serde(default)]
     pub holdoff_samples: u32,
     #[serde(default)]
     pub mode: TrigMode,
-    /// 触发拍前面占窗的比例，[0, 1]，缺省 0.5（示波器屏中）。
-    #[serde(default = "default_trigger_position")]
-    pub position: f32,
 }
 
-fn default_trigger_position() -> f32 {
-    0.5
-}
-
-impl TapTrigger {
+impl ScopeTrigger {
     pub fn validate(&self) -> Result<(), String> {
         self.source.validate().map_err(|e| format!("source: {e}"))?;
         if !self.level.is_finite() {
@@ -396,14 +403,19 @@ impl TapTrigger {
         if !(self.hysteresis.is_finite() && self.hysteresis >= 0.0) {
             return Err(format!("hysteresis must be >= 0 (got {})", self.hysteresis));
         }
-        if !(self.position.is_finite() && (0.0..=1.0).contains(&self.position)) {
-            return Err(format!(
-                "position must be within [0, 1] (got {})",
-                self.position
-            ));
-        }
         Ok(())
     }
+}
+
+/// 触发种类。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub enum TrigKind {
+    #[default]
+    Edge,
+    Pulse,
+    Window,
 }
 
 /// 触发沿。
@@ -477,6 +489,339 @@ impl std::str::FromStr for TrigMode {
     }
 }
 
+/// 时基：一屏多宽、触发点在屏幕哪儿。
+///
+/// 跨度二选一：`span_s`（秒，有率的口）或 `span_scans`（拍，没有率的口也能用）。
+/// `position` = 触发点（t = 0）在屏幕的位置，[0, 1]，缺省 0.5——示波器上这是
+/// 水平位置旋钮，不是触发的属性；pre = round(position × span_scans)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub struct Timebase {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub span_s: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number"))]
+    pub span_scans: Option<u64>,
+    #[serde(default = "default_half")]
+    pub position: f32,
+}
+
+fn default_half() -> f32 {
+    0.5
+}
+
+impl Timebase {
+    pub fn validate(&self) -> Result<(), String> {
+        match (self.span_s, self.span_scans) {
+            (Some(s), None) if s.is_finite() && s > 0.0 => {}
+            (None, Some(n)) if n > 0 => {}
+            (Some(_), Some(_)) => {
+                return Err("timebase: give span_s or span_scans, not both".to_string())
+            }
+            (None, None) => return Err("timebase: span_s or span_scans required".to_string()),
+            _ => return Err("timebase: span must be > 0".to_string()),
+        }
+        if !(self.position.is_finite() && (0.0..=1.0).contains(&self.position)) {
+            return Err(format!(
+                "timebase: position must be within [0, 1] (got {})",
+                self.position
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// 采集模式：normal 每条记录一窗；average 同一触发相位的 N 窗平均（要触发）；
+/// persist 每条记录都进余辉密度图、刷新时只把最新一条当矢量线。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub enum AcqMode {
+    #[default]
+    Normal,
+    Average,
+    Persist,
+}
+
+/// 采集设置。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub struct AcqSetting {
+    #[serde(default)]
+    pub mode: AcqMode,
+    /// average 模式平均几窗，≥ 2。
+    #[serde(default = "default_average_n")]
+    pub average_n: u32,
+    /// 余辉衰减：每次刷新 count × decay，[0, 1]；**1 = 不衰减**（无限余辉）。
+    #[serde(default = "default_persist_decay")]
+    pub persist_decay: f32,
+}
+
+fn default_average_n() -> u32 {
+    16
+}
+
+fn default_persist_decay() -> f32 {
+    0.9
+}
+
+impl Default for AcqSetting {
+    fn default() -> Self {
+        AcqSetting {
+            mode: AcqMode::Normal,
+            average_n: default_average_n(),
+            persist_decay: default_persist_decay(),
+        }
+    }
+}
+
+impl AcqSetting {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.average_n < 2 {
+            return Err(format!(
+                "acq.average_n must be >= 2 (got {})",
+                self.average_n
+            ));
+        }
+        if !(self.persist_decay.is_finite() && (0.0..=1.0).contains(&self.persist_decay)) {
+            return Err(format!(
+                "acq.persist_decay must be within [0, 1] (got {})",
+                self.persist_decay
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// 耦合：dc 原样；ac = 减去当前记录窗（触发窗 / 屏幕跨度）内的均值，密度累积
+/// 与测量都按耦合后的值。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub enum Coupling {
+    #[default]
+    Dc,
+    Ac,
+}
+
+/// 显示插值（显示域的事，前端做）：none（点/台阶）、linear、sinc（加窗 sinc，
+/// 前提是带限于 fs/2.5——PWM 门极、计数器上会画出不存在的过冲）。列 `kind`
+/// 是 enum / bitfield / counter 的通道一律保持台阶，不看这一项。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub enum Interp {
+    None,
+    #[default]
+    Linear,
+    Sinc,
+}
+
+/// 逐通道的垂直设置，键是列引用。没写的通道取缺省：v_div 由引擎首帧自适应。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub struct VerticalSetting {
+    pub channel: ColumnRef,
+    /// 每格多少（物理量），> 0。
+    pub v_div: f64,
+    /// 屏幕中线对应的值（物理量）。
+    #[serde(default)]
+    pub offset: f64,
+    #[serde(default = "default_true")]
+    pub on: bool,
+    #[serde(default)]
+    pub coupling: Coupling,
+    #[serde(default)]
+    pub interp: Interp,
+    /// 带宽限制（Hz），0 = 关。
+    #[serde(default)]
+    pub bw_limit_hz: f64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl VerticalSetting {
+    pub fn validate(&self) -> Result<(), String> {
+        self.channel
+            .validate()
+            .map_err(|e| format!("channel: {e}"))?;
+        if !(self.v_div.is_finite() && self.v_div > 0.0) {
+            return Err(format!("v_div must be > 0 (got {})", self.v_div));
+        }
+        if !self.offset.is_finite() {
+            return Err("offset must be finite".to_string());
+        }
+        if !(self.bw_limit_hz.is_finite() && self.bw_limit_hz >= 0.0) {
+            return Err(format!(
+                "bw_limit_hz must be >= 0 (got {})",
+                self.bw_limit_hz
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// 测量门：screen = 屏幕可见区；cursors = 时间光标之间。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub enum Gate {
+    #[default]
+    Screen,
+    Cursors,
+}
+
+/// 测量设置：量哪些通道、门在哪儿。测量在引擎里按记录算，随 meas 帧发；
+/// 不适用 = NaN 不是 0。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub struct MeasureSetting {
+    #[serde(default)]
+    pub channels: Vec<ColumnRef>,
+    #[serde(default)]
+    pub gate: Gate,
+}
+
+/// 一台示波器的 setup——持久化在绑定的 `bind.scope` 里（node.toml），CLI
+/// `widget bind <alias> port:<id> --scope-file setup.toml` 写的就是它；UI 上拨
+/// 的旋钮即时 `scope_set`、手势结束回写绑定（同一个旋钮，不另存一份）。
+///
+/// 示波器 = 生产口所在壳体里的一台采集引擎：帧单次拷贝进 mmap 文件环（原生
+/// dtype、按列分平面、16× min/max 金字塔），独立线程做触发 / 余辉 / 视图，浏览
+/// 器只拉视图与密度图。设计在 sigflow-core `docs/scope.md`。
+///
+/// 几何（改了要重建环）= `channels` + `depth_bytes` + `budget_bytes_per_s`；其余
+/// 就地生效。
+///
+/// ```toml
+/// [widgets.bind.scope]
+/// channels = [{ column = "iu" }, { column = "iv" }, { column = "iw" }, { column = "z" }]
+/// depth_bytes = 1073741824
+/// budget_bytes_per_s = 400000000
+/// refresh_hz = 30
+/// timebase = { span_s = 0.002, position = 0.5 }
+/// roll_threshold_s = 0.5
+/// [widgets.bind.scope.trigger]
+/// kind = "edge"
+/// source = { column = "z" }
+/// level = 0.5
+/// slope = "rising"
+/// mode = "auto"
+/// [widgets.bind.scope.acq]
+/// mode = "persist"
+/// persist_decay = 0.9
+/// [[widgets.bind.scope.vertical]]
+/// channel = { column = "iu" }
+/// v_div = 50
+/// coupling = "dc"
+/// [widgets.bind.scope.measure]
+/// channels = [{ column = "iu" }]
+/// gate = "screen"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub struct ScopeConfig {
+    /// 进环的列。空 = 整口。字节预算按选中列的 dtype 字节算。
+    #[serde(default)]
+    pub channels: Vec<ColumnRef>,
+    /// 存储深度（字节）。上限归壳体（环境变量），这里只要 > 0。
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub depth_bytes: u64,
+    /// 写环字节预算（B/s）。`fs_allowed = budget / Σ 选中列字节`；超了先向生产
+    /// 方请求降率（口声明了 `negotiable.rate_param`），不支持就入口峰值检测抽取
+    /// ——峰值存储每 scan 存一对，抽取比按存储字节算。
+    #[serde(default = "default_budget")]
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub budget_bytes_per_s: u64,
+    /// 视图 / 密度图 / 测量的推送率。
+    #[serde(default = "default_refresh_hz")]
+    pub refresh_hz: f32,
+    pub timebase: Timebase,
+    /// 一屏长过它自动进 roll（跟着写指针走，不触发）。
+    #[serde(default = "default_roll_threshold")]
+    pub roll_threshold_s: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub trigger: Option<ScopeTrigger>,
+    #[serde(default)]
+    pub acq: AcqSetting,
+    #[serde(default)]
+    pub vertical: Vec<VerticalSetting>,
+    #[serde(default)]
+    pub measure: MeasureSetting,
+}
+
+fn default_budget() -> u64 {
+    400_000_000
+}
+
+fn default_refresh_hz() -> f32 {
+    30.0
+}
+
+fn default_roll_threshold() -> f64 {
+    0.5
+}
+
+impl ScopeConfig {
+    /// 几何相同 = 环不用重建。
+    pub fn same_geometry(&self, other: &ScopeConfig) -> bool {
+        self.channels == other.channels
+            && self.depth_bytes == other.depth_bytes
+            && self.budget_bytes_per_s == other.budget_bytes_per_s
+    }
+
+    /// 声明层面的自洽性。列 id 存不存在、深度超不超壳体上限，要到壳体才知道。
+    pub fn validate(&self) -> Result<(), String> {
+        if self.depth_bytes == 0 {
+            return Err("depth_bytes must be > 0".to_string());
+        }
+        if self.budget_bytes_per_s == 0 {
+            return Err("budget_bytes_per_s must be > 0".to_string());
+        }
+        if !(self.refresh_hz.is_finite() && self.refresh_hz > 0.0) {
+            return Err(format!("refresh_hz must be > 0 (got {})", self.refresh_hz));
+        }
+        if !(self.roll_threshold_s.is_finite() && self.roll_threshold_s >= 0.0) {
+            return Err(format!(
+                "roll_threshold_s must be >= 0 (got {})",
+                self.roll_threshold_s
+            ));
+        }
+        for c in &self.channels {
+            c.validate().map_err(|e| format!("channels: {e}"))?;
+        }
+        self.timebase.validate()?;
+        if let Some(t) = &self.trigger {
+            t.validate().map_err(|e| format!("trigger: {e}"))?;
+        }
+        self.acq.validate()?;
+        if self.acq.mode == AcqMode::Average && self.trigger.is_none() {
+            return Err("acq.mode = average needs a trigger".to_string());
+        }
+        for (i, v) in self.vertical.iter().enumerate() {
+            v.validate().map_err(|e| format!("vertical[{i}]: {e}"))?;
+            if !v.channel.selected_in(&self.channels) {
+                return Err(format!(
+                    "vertical[{i}]: channel {} is not in channels",
+                    v.channel
+                ));
+            }
+        }
+        for (i, c) in self.measure.channels.iter().enumerate() {
+            c.validate()
+                .map_err(|e| format!("measure.channels[{i}]: {e}"))?;
+            if !c.selected_in(&self.channels) {
+                return Err(format!("measure.channels[{i}]: {c} is not in channels"));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tap_config_tests {
     use super::*;
@@ -488,29 +833,14 @@ mod tap_config_tests {
             stats: vec![],
             mode: None,
             channels: vec![],
-            trigger: None,
-        }
-    }
-
-    fn trig(source: &str) -> TapTrigger {
-        TapTrigger {
-            source: source.parse().unwrap(),
-            level: 0.0,
-            slope: TrigSlope::Rising,
-            hysteresis: 0.0,
-            holdoff_samples: 0,
-            mode: TrigMode::Auto,
-            position: 0.5,
         }
     }
 
     #[test]
     fn 老配置不带新字段照样加载_新字段取缺省() {
-        // 线上的绑定、前端的常量对象都是这个形状；升级不能让它们读不回来。
         let c: TapConfig =
             serde_json::from_str(r#"{"window_samples":1024,"refresh_hz":30,"stats":[]}"#).unwrap();
         assert!(c.channels.is_empty(), "空 = 整口全部列");
-        assert!(c.trigger.is_none());
         assert_eq!(c.effective_mode(), TapMode::Window);
         assert!(c.validate().is_ok());
 
@@ -519,11 +849,22 @@ mod tap_config_tests {
     }
 
     #[test]
-    fn 序列化永远带_channels_触发缺省不写() {
-        // JSON 得和类型说一样的话：Vec 永远带 []，Option 缺省不出现。
+    fn 带触发的旧_tap_段照样读_触发被丢() {
+        // tap 退回纯订阅：触发搬去了示波器。旧绑定里的 trigger 字段不认、不报错
+        // ——它只存在于没合过的分支上。
+        let c: TapConfig = serde_json::from_str(
+            r#"{"window_samples":400,"refresh_hz":30,"stats":[],"channels":[{"column":"iq"}],"trigger":{"source":{"column":"z"},"level":0.5}}"#,
+        )
+        .unwrap();
+        assert_eq!(c.channels.len(), 1);
+        let s = serde_json::to_string(&c).unwrap();
+        assert!(!s.contains("trigger"), "{s}");
+    }
+
+    #[test]
+    fn 序列化永远带_channels() {
         let s = serde_json::to_string(&window(1024)).unwrap();
         assert!(s.contains(r#""channels":[]"#), "{s}");
-        assert!(!s.contains("trigger"), "{s}");
     }
 
     #[test]
@@ -562,52 +903,24 @@ mod tap_config_tests {
     }
 
     #[test]
-    fn 触发只认_window_模式() {
-        let mut c = window(0);
-        c.trigger = Some(trig("pwm_cnt"));
-        let e = c.validate().unwrap_err();
-        assert!(e.contains("window"), "{e}");
-
-        let mut s = window(0);
-        s.mode = Some(TapMode::Stream);
-        s.trigger = Some(trig("pwm_cnt"));
-        assert!(s.validate().is_err(), "stream 带触发也拒");
-
-        let mut w = window(400);
-        w.trigger = Some(trig("pwm_cnt"));
-        assert!(w.validate().is_ok());
-    }
-
-    #[test]
-    fn 触发参数越界要拒() {
-        let mut w = window(400);
-        let mut t = trig("iq");
-        t.position = 1.5;
-        w.trigger = Some(t.clone());
-        assert!(w.validate().unwrap_err().contains("position"));
-
-        t.position = 0.5;
-        t.hysteresis = -1.0;
-        w.trigger = Some(t.clone());
-        assert!(w.validate().unwrap_err().contains("hysteresis"));
-
-        t.hysteresis = 0.0;
-        t.level = f64::NAN;
-        w.trigger = Some(t.clone());
-        assert!(w.validate().unwrap_err().contains("level"));
-
-        t.level = 0.0;
-        t.source = ColumnRef::Column {
-            column: " ".into(),
-            group: None,
-        };
-        w.trigger = Some(t);
-        assert!(w.validate().unwrap_err().contains("source"));
+    fn 选列集的包含关系_空集是整口_不带组序覆盖所有组() {
+        let sel: Vec<ColumnRef> = ["iq", "2/id", "@3"]
+            .iter()
+            .map(|s| s.parse().unwrap())
+            .collect();
+        let r = |s: &str| s.parse::<ColumnRef>().unwrap();
+        assert!(r("iq").selected_in(&sel));
+        assert!(r("1/iq").selected_in(&sel), "不带组序的 iq 覆盖每一组");
+        assert!(r("2/id").selected_in(&sel));
+        assert!(!r("1/id").selected_in(&sel), "带组序的只覆盖那一组");
+        assert!(!r("id").selected_in(&sel), "选的是 2/id，裸 id 不算在里面");
+        assert!(r("@3").selected_in(&sel));
+        assert!(!r("@4").selected_in(&sel));
+        assert!(r("anything").selected_in(&[]), "空集 = 整口");
     }
 
     #[test]
     fn 显式_window_但窗长_0_要拒() {
-        // 今天的 Tap::new 会开一个 0 长的环，push 时 `% 0` 就 panic。
         let mut c = window(0);
         c.mode = Some(TapMode::Window);
         assert!(c.validate().is_err());
@@ -622,8 +935,7 @@ mod tap_config_tests {
         let mut b = a.clone();
         b.refresh_hz = 5.0;
         b.stats = vec!["rms".into()];
-        b.trigger = Some(trig("iq"));
-        assert!(a.same_geometry(&b), "刷新率/统计/触发变了不重建");
+        assert!(a.same_geometry(&b), "刷新率/统计变了不重建");
 
         let mut c = a.clone();
         c.channels = vec!["iq".parse().unwrap()];
@@ -633,38 +945,207 @@ mod tap_config_tests {
         d.window_samples = 2048;
         assert!(!a.same_geometry(&d));
 
-        // 显式 window 与推出来的 window 是同一个几何。
         let mut e = a.clone();
         e.mode = Some(TapMode::Window);
         assert!(a.same_geometry(&e));
     }
+}
 
-    #[test]
-    fn 触发段的_toml_形状就是文档里写的那个() {
-        // 绑定持久化在 node.toml；手写的配置也得能读回来，缺省项可省。
-        let t: TapConfig = toml::from_str(
-            r#"
-window_samples = 400
+#[cfg(test)]
+mod scope_config_tests {
+    use super::*;
+
+    const SETUP: &str = r#"
+channels = [{ column = "iu" }, { column = "iv" }, { column = "iw" }, { column = "z" }]
+depth_bytes = 1073741824
+budget_bytes_per_s = 400000000
 refresh_hz = 30
-mode = "window"
-channels = [{ column = "pwm_cnt" }, { column = "va" }, { column = "iq", group = 2 }, { channel = 7 }]
+timebase = { span_s = 0.002, position = 0.5 }
+roll_threshold_s = 0.5
 
 [trigger]
-source = { column = "pwm_cnt" }
-level = 0
-slope = "falling"
-holdoff_samples = 350
-mode = "normal"
+kind = "edge"
+source = { column = "z" }
+level = 0.5
+slope = "rising"
+hysteresis = 0
+holdoff_samples = 0
+mode = "auto"
+
+[acq]
+mode = "persist"
+average_n = 16
+persist_decay = 0.9
+
+[[vertical]]
+channel = { column = "iu" }
+v_div = 50
+offset = 0
+on = true
+coupling = "dc"
+interp = "linear"
+bw_limit_hz = 0
+
+[measure]
+channels = [{ column = "iu" }]
+gate = "screen"
+"#;
+
+    fn setup() -> ScopeConfig {
+        toml::from_str(SETUP).unwrap()
+    }
+
+    #[test]
+    fn 文档里的_toml_形状能读_且过校验() {
+        let c = setup();
+        assert_eq!(c.channels.len(), 4);
+        assert_eq!(c.timebase.span_s, Some(0.002));
+        assert_eq!(c.timebase.position, 0.5);
+        assert_eq!(c.trigger.as_ref().unwrap().kind, TrigKind::Edge);
+        assert_eq!(c.acq.mode, AcqMode::Persist);
+        assert_eq!(c.vertical[0].interp, Interp::Linear);
+        assert_eq!(c.measure.gate, Gate::Screen);
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn 缺省项可省_只写必填() {
+        let c: ScopeConfig = toml::from_str(
+            r#"
+depth_bytes = 268435456
+timebase = { span_scans = 4000 }
 "#,
         )
         .unwrap();
-        assert_eq!(t.channels.len(), 4);
-        assert_eq!(t.channels[3], ColumnRef::Channel { channel: 7 });
-        let tr = t.trigger.as_ref().unwrap();
-        assert_eq!(tr.slope, TrigSlope::Falling);
-        assert_eq!(tr.mode, TrigMode::Normal);
-        assert_eq!(tr.hysteresis, 0.0, "缺省 0");
-        assert_eq!(tr.position, 0.5, "缺省屏中");
-        assert!(t.validate().is_ok());
+        assert_eq!(c.budget_bytes_per_s, 400_000_000);
+        assert_eq!(c.refresh_hz, 30.0);
+        assert_eq!(c.roll_threshold_s, 0.5);
+        assert_eq!(c.timebase.position, 0.5, "触发点缺省屏中");
+        assert_eq!(c.acq, AcqSetting::default());
+        assert_eq!(c.acq.average_n, 16);
+        assert_eq!(c.acq.persist_decay, 0.9);
+        assert!(c.trigger.is_none() && c.vertical.is_empty() && c.measure.channels.is_empty());
+        assert!(c.validate().is_ok());
+        let s = serde_json::to_string(&c).unwrap();
+        assert!(
+            s.contains(r#""channels":[]"#) && !s.contains("trigger"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn 跨度二选一_必填() {
+        let mut c = setup();
+        c.timebase.span_scans = Some(10);
+        assert!(c.validate().unwrap_err().contains("not both"));
+        c.timebase.span_s = None;
+        c.timebase.span_scans = None;
+        assert!(c.validate().unwrap_err().contains("required"));
+        c.timebase.span_s = Some(0.0);
+        assert!(c.validate().unwrap_err().contains("> 0"));
+        c.timebase.span_s = Some(1.0);
+        c.timebase.position = 1.5;
+        assert!(c.validate().unwrap_err().contains("position"));
+    }
+
+    #[test]
+    fn 垂直与测量的通道必须在选中列里() {
+        let mut c = setup();
+        c.vertical[0].channel = "iq".parse().unwrap();
+        let e = c.validate().unwrap_err();
+        assert!(
+            e.contains("vertical[0]") && e.contains("not in channels"),
+            "{e}"
+        );
+
+        let mut c = setup();
+        c.measure.channels = vec!["nope".parse().unwrap()];
+        assert!(c.validate().unwrap_err().contains("measure.channels[0]"));
+
+        // 空选列 = 整口：什么通道都算在里面
+        let mut c = setup();
+        c.channels.clear();
+        c.vertical[0].channel = "iq".parse().unwrap();
+        assert!(c.validate().is_ok());
+
+        // 触发源不必在选中列里（外触发）
+        let mut c = setup();
+        c.trigger.as_mut().unwrap().source = "iq_ref".parse().unwrap();
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn 数值边界() {
+        let mut c = setup();
+        c.depth_bytes = 0;
+        assert!(c.validate().unwrap_err().contains("depth_bytes"));
+        let mut c = setup();
+        c.budget_bytes_per_s = 0;
+        assert!(c.validate().unwrap_err().contains("budget"));
+        let mut c = setup();
+        c.vertical[0].v_div = 0.0;
+        assert!(c.validate().unwrap_err().contains("v_div"));
+        let mut c = setup();
+        c.vertical[0].bw_limit_hz = -1.0;
+        assert!(c.validate().unwrap_err().contains("bw_limit_hz"));
+        let mut c = setup();
+        c.acq.persist_decay = 1.5;
+        assert!(c.validate().unwrap_err().contains("persist_decay"));
+        let mut c = setup();
+        c.acq.persist_decay = 1.0;
+        assert!(c.validate().is_ok(), "1 = 不衰减，合法");
+        let mut c = setup();
+        c.acq.average_n = 1;
+        assert!(c.validate().unwrap_err().contains("average_n"));
+        let mut c = setup();
+        c.trigger.as_mut().unwrap().hysteresis = -0.1;
+        assert!(c.validate().unwrap_err().contains("hysteresis"));
+    }
+
+    #[test]
+    fn average_要有触发() {
+        let mut c = setup();
+        c.acq.mode = AcqMode::Average;
+        assert!(c.validate().is_ok());
+        c.trigger = None;
+        assert!(c.validate().unwrap_err().contains("average"));
+    }
+
+    #[test]
+    fn 几何是选列加深度加预算() {
+        let a = setup();
+        let mut b = a.clone();
+        b.refresh_hz = 10.0;
+        b.trigger = None;
+        b.acq.mode = AcqMode::Normal;
+        b.timebase.span_s = Some(1.0);
+        assert!(a.same_geometry(&b));
+        let mut c = a.clone();
+        c.depth_bytes *= 2;
+        assert!(!a.same_geometry(&c));
+        let mut d = a.clone();
+        d.channels.pop();
+        assert!(!a.same_geometry(&d));
+        let mut e = a.clone();
+        e.budget_bytes_per_s = 1;
+        assert!(!a.same_geometry(&e));
+    }
+
+    #[test]
+    fn 绑定里的_scope_段随_widget_binding_往返() {
+        let b: WidgetBinding = toml::from_str(&format!(
+            "kind = \"port\"\ntarget = \"loop\"\n[scope]\n{}",
+            SETUP
+                .replace("[trigger]", "[scope.trigger]")
+                .replace("[acq]", "[scope.acq]")
+                .replace("[[vertical]]", "[[scope.vertical]]")
+                .replace("[measure]", "[scope.measure]")
+        ))
+        .unwrap();
+        let sc = b.scope.as_ref().expect("scope section");
+        assert_eq!(sc.channels.len(), 4);
+        assert!(b.tap.is_none());
+        let s = serde_json::to_string(&b).unwrap();
+        assert!(s.contains("\"scope\"") && !s.contains("\"tap\""), "{s}");
     }
 }
