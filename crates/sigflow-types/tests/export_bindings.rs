@@ -46,7 +46,10 @@ use sigflow_types::schema::{
     TargetStatus,
 };
 use sigflow_types::semantic::{BackpressurePolicy, BatchSpec, PayloadSchemaId, SemanticType};
-use sigflow_types::ui::{BindKind, Layout, TapConfig, UiWidget, WidgetBinding};
+use sigflow_types::ui::{
+    BindKind, ColumnRef, Layout, TapConfig, TapMode, TapTrigger, TrigMode, TrigSlope, UiWidget,
+    WidgetBinding,
+};
 
 /// Export each listed type plus its transitive dependencies into `dir`.
 macro_rules! export_all {
@@ -80,7 +83,9 @@ fn export_bindings() {
         // semantic / type system
         SemanticType, PayloadSchemaId, BatchSpec, BackpressurePolicy,
         // ui widgets
-        UiWidget, WidgetBinding, BindKind, Layout, TapConfig,
+        UiWidget, WidgetBinding, BindKind, Layout, TapConfig, TapMode,
+        // 一台示波器 = 一份 tap：选列、触发
+        ColumnRef, TapTrigger, TrigSlope, TrigMode,
         // rpc envelope + method payloads
         RpcMessage, RpcRequest, RpcResponse, RpcError, RpcNotification,
         SetParamRequest, GetParamRequest, GetParamResponse, InvokeActionRequest,

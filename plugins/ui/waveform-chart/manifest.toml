@@ -1,6 +1,12 @@
-# sigflow.ui.waveform_chart — 时域波形图（MVP 8 控件之一）。绑 producer 端口,
-# 数据走 tap（窗口/刷新率/统计量配置在绑定的 tap 段）。纯渲染,不含触发/捕获
-# 逻辑。y_min/y_max 缺省则自适应量程。纯 manifest 包。
+# sigflow.ui.waveform_chart — 时域波形图 / 示波器。绑一个口（生产口或消费口），
+# 数据走 tap：**一台示波器 = 一份 tap**——窗长/刷新率/模式/选列/触发都在绑定的
+# tap 段里（`bind.tap`，类型见 sigflow-types `ui::TapConfig`），CLI `widget bind`
+# 的 `--window/--refresh/--mode/--channels/--trig-*` 写的就是它。一个口上想开几台
+# 就加几个控件各绑各的 tap：各自选列、各自触发、各自 run/stop，互不干扰——节点
+# 把同一条采样轴上的量都放进一个口就够了，不必为了分开看而拆口。触发本身住在
+# tap（壳体）里，这里只有它的旋钮和状态；耦合/缩放/光标/测量全在浏览器，且只算
+# 显示的那份数据——测量和曲线是同一个证人。y_min/y_max 缺省则逐通道自适应。
+# 设计与壳体/前端分工见 docs/tap-scope.md。纯 manifest 包。
 #
 # 图例读**绑定口的列契约**（`columns` + `column_groups`）：一根轴的那几个量
 # 自动成一组、一组一个可折叠的标签，组名带 `title_columns` 的别名/模式徽章,
@@ -33,6 +39,49 @@
 # `declared_rate_hz`——生产方按帧带的 rate 注解在 tap 摘取时被剥掉，前端拿不
 # 到。**只有采样率是编译期常量的口才该声明**：随参数变的口声明会撒谎；两样都
 # 没有就按样本数标轴。
+#
+# ── 示波器：什么住在 tap，什么住在图里 ──────────────────────────────────
+# tap（壳体；在绑定里声明，CLI 能写，UI 改了回写绑定）：
+#   channels   只抽这几列（按列 id；`2/iq` 指第 2 组、`@3` 指下标）。空 = 整口。
+#              这是"这台示波器看什么"的声明，和图例里单击藏一条是两件事：藏是
+#              瞥一眼的手势，刻意不存——存了就是"忘了拨回来"的坑，一条永远被藏
+#              起来的通道等于少一个证人。
+#   trigger    源列 / 电平 / 沿 / 迟滞 / 释抑（拍）/ 模式 auto|normal|single /
+#              预触发比例。只对 window 模式；源列不必在 channels 里（外触发）。
+#              语义写在 `ui::TapTrigger` 的注释里：壳体按它实现，图按它画。
+# 图（浏览器；存本地，或者刻意不存）：
+#   触发旋钮   右缘可拖的电平标记画在**源列的轴上**——源列开了 AC 就画在
+#              level − mean 处（tap 比的是原始值，图只是平移了画法）；顶缘可拖
+#              的预触发 T 标记；面板改源/沿/电平/迟滞/释抑/模式。改动即时
+#              `set_tap`，手势结束后回写绑定（node.toml）：CLI 和 UI 拨的是同一
+#              个旋钮，本地另存一份就是第二事实源。
+#   Run/Stop/Single 与徽章 Auto / Trig'd / Armed / Stop。stop = tap 不再收样本
+#              （环和最后一窗留着），run 清环重来。这是这个观察者的运行态，不进
+#              绑定，刷新页面就没了。
+#   时间轴     触发来的帧 t=0 在触发拍（帧上 `trig_offset`），前负后正；自由跑
+#              的窗右缘为 0。单位仍只认 `declared_rate_hz`，没有就按拍数。
+#   逐通道刻度 每通道 units/div + 偏移，共用 8 格网格。**缺省按契约的 `unit`
+#              共享刻度**（mA 的一起、° 的一起——iu/iv/iw 不共刻度，肉眼比幅值
+#              就是错的），单通道可解锁独立；无契约的口全体共享 + 可单独解锁。
+#              选中活动通道后 Y 沟槽的滚轮/拖只动它，没选中动全体；双击重置。
+#              存本地，键是列 id 不是通道号。
+#   DC/AC      显示变换：AC = 减去本帧均值（stream 减可见跨度的均值）。测量与
+#              光标读的是耦合后的数据，读数旁标 (AC)。存本地。
+#   光标       时间光标一对（Δt、1/Δt、各可见通道在两处的值）；幅值光标一对，
+#              **挂在活动通道的轴上**（通道各有各的刻度，横线离开轴没有意义）。
+#              开关与位置存本地：时间光标以相对触发点/右缘的拍数，幅值以列 id
+#              + 值。
+#   测量       按勾选的通道各算一行，门 = 屏幕可见区（开了时间光标可切成光标
+#              之间）。垂直：max / min / pk-pk / amplitude（top − base，直方图
+#              法）/ mean / rms，找到整周期另给 cyc-mean / cyc-rms；水平：period
+#              / freq / +width / −width / duty / rise / fall（mid 电平 ±10% 迟滞
+#              找沿，沿位置线性插值）。有 `declared_rate_hz` 才换成时间，否则报
+#              拍数。**不适用不写 0**：找不到沿 period 显「—」；NaN 拍垂直量跳
+#              过、水平量当断链。它替代原来那行把所有列混在一起算的 `rms · peak`。
+#   放哪       面上只留 Run/Stop 和触发徽章；触发面板、测量表、光标读数在控件
+#              弹出的浮窗里（同 page 控件那套壳，可最大化）。
+# frame 模式的口（生产方自己开窗，如 foc_sil 的 pwm）没有触发，但测量 / 光标 /
+# 刻度 / 耦合照用——它们只看显示的那一帧。
 name = "sigflow.ui.waveform_chart"
 version = "0.1.0"
 category = "ui_widget"
@@ -46,6 +95,7 @@ entry = "unused"
 widget_type = "waveform_chart"
 bindable_to = [{ kind = "port" }]
 
+# 都给了就是所有通道的初始量程（相当于全锁到同一刻度）；缺省逐通道自适应。
 [widget.config_schema.y_min]
 type = "f64"
 
@@ -60,6 +110,7 @@ default = "#38bdf8"
 type = "bool"
 default = true
 
+# 首次打开是否展开测量条（之后的开合存本地）。
 [widget.config_schema.show_stats]
 type = "bool"
 default = true
