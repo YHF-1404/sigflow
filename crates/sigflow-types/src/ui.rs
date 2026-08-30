@@ -254,6 +254,11 @@ impl std::str::FromStr for TapMode {
 /// - 按通道下标：`{ channel = 3 }`——给没有列契约的口；有契约的口也认，但那
 ///   就回到了"口加一列就错位"的老路，声明里别这么写。
 ///
+/// **相等是"写法相等"，不是"指同一列"**：单组口上 `{ column = "v" }`（每组）与
+/// `{ column = "v", group = 0 }`（第 0 组）指着同一路，`PartialEq` 却判不等——拿它
+/// 当 map 键、做集合比较就会两边对不上（CLI 写一种、控件写另一种，谁也看不见谁）。
+/// 做身份之前**先落到具体通道**（解析成交织下标，或 (列 id, 组) 一对）再比。
+///
 /// 文本形式（CLI）：`iq`、`2/iq`、`@3`。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
@@ -281,7 +286,9 @@ impl ColumnRef {
     }
 
     /// `self` 是不是在选列集 `sel` 里。空集 = 整口，什么都在。不带组序的选列
-    /// 引用覆盖该列的所有组。
+    /// 引用覆盖该列的所有组；**反过来不成立**——`sel` 指定了组，而被查的引用不带
+    /// 组（= 每组）不是它的子集，判不在。多组口上这是对的（"每组"确实越出了那一
+    /// 组），单组口上是保守的拒绝：把两边的写法对齐即可。
     pub fn selected_in(&self, sel: &[ColumnRef]) -> bool {
         if sel.is_empty() {
             return true;
@@ -934,6 +941,24 @@ mod tap_config_tests {
         assert!("@x".parse::<ColumnRef>().is_err());
         assert!("a/iq".parse::<ColumnRef>().is_err(), "组序要是数字");
         assert!("2/".parse::<ColumnRef>().is_err());
+    }
+
+    #[test]
+    fn 列引用的相等是写法相等_不是指同一列() {
+        // 单组口上这两个指着同一路，PartialEq 却判不等——sigflow-core 的触发源下拉
+        // 就栽在这上面：CLI 写 `0/v`、控件按形状省成 `v`，按写法取键两边对不上。
+        // 拿 ColumnRef 做身份的代码要先落到具体通道再比。
+        let bare: ColumnRef = "v".parse().unwrap();
+        let g0: ColumnRef = "0/v".parse().unwrap();
+        assert_ne!(bare, g0);
+        assert!(
+            g0.selected_in(&[bare.clone()]),
+            "选列集里不带组序的覆盖所有组"
+        );
+        assert!(
+            !bare.selected_in(&[g0.clone()]),
+            "反过来不成立：指定了组，'每组'不是子集"
+        );
     }
 
     #[test]
