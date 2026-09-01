@@ -1,9 +1,15 @@
 # sigflow.core.sig_gen —— 示波器验收与压测用的测试源：正弦 / 方波 / 三角 / 锯齿 /
 # 脉冲 / 噪声，fs 可到 100 MS/s，1..16 通道，f32 或 i16。不依赖任何仿真能否连续实时。
 #
-# 两个生产口，一次只有一个在发（`dtype` 参数选）：口的 dtype 是静态声明，不能在
-# 运行时改，所以 f32 和 i16 各一个口、各自说真话。i16 口的列带 scale = 1/32768：
+# 两个生产口，`dtype` 参数选谁在发（f32 / i16 / both）：口的 dtype 是静态声明，不能
+# 在运行时改，所以 f32 和 i16 各一个口、各自说真话。i16 口的列带 scale = 1/32768：
 # 码 → 伏，满量程 ±1 V（amplitude_v + dc_offset_v 超出就削顶）。
+#
+# `dtype = "both"` 是**多源示波器的验收源**：两个口同时发、各自一个率（f32 走
+# fs_hz、i16 走 fs2_hz），一个节点上就能凑出两个不同率的源进同一台示波器。两条流
+# 锚在同一时刻、同一相位，相位每拍推进 freq/fs，所以在**绝对时间**上它们是同一根
+# 信号——示波器把两个口重采样到同一根时钟上之后，同一拍上两路该读到同一个值，
+# 差多少就是多源对齐的误差。
 #
 # 通道数是运行时参数，列契约用 `repeat_by` 表达：一列 `v` 按组重复，组数 = 帧宽
 # ÷ 1，只有帧知道。fs 也是参数，所以**不声明 declared_rate_hz**——每一帧带
@@ -59,7 +65,15 @@ id = "dtype"
 param_type = "string"
 default = { string = "f32" }
 hot_change = false
-label = "Output port: f32 | i16"
+label = "Output port: f32 | i16 | both"
+
+[[parameters]]
+id = "fs2_hz"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 100000000.0 } }
+default = { f64 = 0.0 }
+unit = "Hz"
+label = "i16 port rate when dtype = both (0 = same as fs_hz)"
 
 [[parameters]]
 id = "fs_hz"

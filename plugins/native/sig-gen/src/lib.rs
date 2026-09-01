@@ -72,11 +72,78 @@ fn parse_waveforms(s: &str) -> Option<Vec<Wave>> {
     v.filter(|v| !v.is_empty())
 }
 
+/// 一个口的流状态。两个口各一份——波形参数共用，序号轴与相位各走各的，这样
+/// `dtype = "both"` 时两个口可以有不同的率。
+///
+/// **两个口在绝对时间上是同一根信号**：`start()` 时两条流锚在同一时刻、同一相位，
+/// 相位每拍推进 `freq/fs`，所以流 st 的样本 n 的相位 = 起始相位 + freq × (t − 锚点)
+/// ——与 fs 无关。示波器把两个口重采样到同一根时钟上之后，同一拍上两路该读到同一
+/// 个值：多源验收就拿这个当已知真值。
+struct Stream {
+    fs_hz: f64,
+    seq: u64,
+    /// 下一个要发的样本的绝对序号。
+    index: u64,
+    /// 采样轴锚点：`t(index) = anchor_t0_ns + (index − anchor_index) / fs`。改 fs 时重锚。
+    anchor_index: u64,
+    anchor_t0_ns: i64,
+    /// 每通道相位（一圈 = 2^64）。
+    phase: [u64; MAX_CHANNELS],
+    /// inject_gap：下一帧前跳过这么多拍。
+    pending_gap: u64,
+    /// 下一帧带不连续标记（gap 0 = 新采样轴 / 布局变了，不是丢样本）。
+    pending_disc: bool,
+    pending_glitch: bool,
+    /// 缓存的 sfrate01 注解体（fs 变了重算）。
+    rate_annotation: Vec<u8>,
+}
+
+impl Stream {
+    fn new(fs_hz: f64) -> Stream {
+        Stream {
+            fs_hz,
+            seq: 0,
+            index: 0,
+            anchor_index: 0,
+            anchor_t0_ns: 0,
+            phase: [0; MAX_CHANNELS],
+            pending_gap: 0,
+            pending_disc: false,
+            pending_glitch: false,
+            rate_annotation: encode_rate_annotation(fs_hz),
+        }
+    }
+}
+
+/// 哪几个口在发。口的 dtype 是静态声明，不能运行时改，所以"发什么类型"只能是
+/// "发哪个口"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Emit {
+    F32,
+    I16,
+    /// 两个口同时发，各自一个率（f32 走 `fs_hz`、i16 走 `fs2_hz`）——多源示波器
+    /// 的验收源：一个节点两个不同率的口进同一台示波器。
+    Both,
+}
+
+impl Emit {
+    /// 这个模式下在发的口（manifest 顺序：0 = f32、1 = i16）。
+    fn ports(self) -> &'static [usize] {
+        match self {
+            Emit::F32 => &[PORT_F32],
+            Emit::I16 => &[PORT_I16],
+            Emit::Both => &[PORT_F32, PORT_I16],
+        }
+    }
+}
+
 pub struct SigGen {
     // --- 参数 ---
     fs_hz: f64,
+    /// i16 口的率；0 = 跟 `fs_hz`。只有 `dtype = "both"` 时才有独立的意义。
+    fs2_hz: f64,
     channels: usize,
-    i16_out: bool,
+    emit: Emit,
     waves: Vec<Wave>,
     freq_hz: f64,
     amplitude_v: f64,
@@ -87,31 +154,26 @@ pub struct SigGen {
     gap_samples: u64,
     glitch_v: f64,
 
-    // --- 流状态 ---
-    seq: u64,
-    /// 下一个要发的样本的绝对序号。
-    index: u64,
-    /// 采样轴锚点：`t(index) = anchor_t0_ns + (index − anchor_index) / fs`。改 fs 时重锚。
-    anchor_index: u64,
-    anchor_t0_ns: i64,
-    /// 每通道相位（一圈 = 2^64）。
-    phase: [u64; MAX_CHANNELS],
+    // --- 流状态（两个口各一份）---
+    streams: [Stream; 2],
     rng: u64,
-    /// inject_gap：下一帧前跳过这么多拍。
-    pending_gap: u64,
-    /// 下一帧带不连续标记（gap 0 = 新采样轴 / 布局变了，不是丢样本）。
-    pending_disc: bool,
-    pending_glitch: bool,
-    /// 缓存的 sfrate01 注解体（fs 变了重算）。
-    rate_annotation: Vec<u8>,
     lut: Box<[f32; LUT_SIZE + 1]>,
 }
 
 impl SigGen {
-    fn phase_inc(&self) -> u64 {
+    fn phase_inc(&self, st: usize) -> u64 {
         // freq/fs 圈每样本 × 2^64；freq ≥ fs 时混叠是使用者的事，这里只做取模。
-        let turns = (self.freq_hz / self.fs_hz).rem_euclid(1.0);
+        let turns = (self.freq_hz / self.streams[st].fs_hz).rem_euclid(1.0);
         (turns * 18_446_744_073_709_551_616.0) as u64
+    }
+
+    /// 参数说的第 `st` 个口的率：i16 口的 `fs2_hz` 给了就用它，没给就跟 `fs_hz`。
+    fn target_fs(&self, st: usize) -> f64 {
+        if st == PORT_I16 && self.fs2_hz > 0.0 {
+            self.fs2_hz
+        } else {
+            self.fs_hz
+        }
     }
 
     fn channel_offset(&self, ch: usize) -> u64 {
@@ -121,7 +183,10 @@ impl SigGen {
 
     fn reset_phases(&mut self) {
         for ch in 0..MAX_CHANNELS {
-            self.phase[ch] = self.channel_offset(ch);
+            let p = self.channel_offset(ch);
+            for st in &mut self.streams {
+                st.phase[ch] = p;
+            }
         }
     }
 
@@ -142,14 +207,14 @@ impl SigGen {
         ((r >> 11) as f64) * (2.0 / 9_007_199_254_740_992.0) - 1.0
     }
 
-    /// 生成 `scans` 拍到 `out`（f32 或 i16，按 `i16_out`），推进相位。返回写入字节。
+    /// 生成 `scans` 拍到 `out`（口 `st` 的 dtype），推进那条流的相位。返回写入字节。
     ///
     /// 按通道各跑一个紧循环（stride 写）：波形分支在循环外定死，正弦查表 /
     /// 方波比较 / 三角与锯齿的乘加都能被编译器单独优化；按样本切换波形的写法
     /// 每个样本一次分支预测失败，100 MS/s × 4 通道就跑不动了。
-    fn fill(&mut self, out: &mut [u8], scans: usize) -> usize {
+    fn fill(&mut self, st: usize, out: &mut [u8], scans: usize) -> usize {
         let ch = self.channels;
-        let inc = self.phase_inc();
+        let inc = self.phase_inc(st);
         let duty_p = if self.duty >= 1.0 {
             u64::MAX
         } else {
@@ -158,11 +223,11 @@ impl SigGen {
         let amp = self.amplitude_v;
         let dc = self.dc_offset_v;
         let noise = self.noise_v;
-        let glitch = self.pending_glitch.then_some(self.glitch_v);
-        self.pending_glitch = false;
+        let glitch = self.streams[st].pending_glitch.then_some(self.glitch_v);
+        self.streams[st].pending_glitch = false;
         let n_vals = scans * ch;
 
-        let bytes = if self.i16_out {
+        let bytes = if st == PORT_I16 {
             let nbytes = n_vals * 2;
             let buf = &mut out[..nbytes];
             // SAFETY: i16 has no invalid bit patterns; align_to_mut keeps the
@@ -171,9 +236,10 @@ impl SigGen {
             if pre.is_empty() && mid.len() == n_vals {
                 for c in 0..ch {
                     let wave = self.wave_of(c);
-                    self.phase[c] = self.run_channel(
+                    let p0 = self.streams[st].phase[c];
+                    self.streams[st].phase[c] = self.run_channel(
                         wave,
-                        self.phase[c],
+                        p0,
                         inc,
                         duty_p,
                         dc,
@@ -190,9 +256,10 @@ impl SigGen {
                 let mut tmp = vec![0i16; n_vals];
                 for c in 0..ch {
                     let wave = self.wave_of(c);
-                    self.phase[c] = self.run_channel(
+                    let p0 = self.streams[st].phase[c];
+                    self.streams[st].phase[c] = self.run_channel(
                         wave,
-                        self.phase[c],
+                        p0,
                         inc,
                         duty_p,
                         dc,
@@ -218,9 +285,10 @@ impl SigGen {
             if pre.is_empty() && mid.len() == n_vals {
                 for c in 0..ch {
                     let wave = self.wave_of(c);
-                    self.phase[c] = self.run_channel(
+                    let p0 = self.streams[st].phase[c];
+                    self.streams[st].phase[c] = self.run_channel(
                         wave,
-                        self.phase[c],
+                        p0,
                         inc,
                         duty_p,
                         dc,
@@ -237,9 +305,10 @@ impl SigGen {
                 let mut tmp = vec![0f32; n_vals];
                 for c in 0..ch {
                     let wave = self.wave_of(c);
-                    self.phase[c] = self.run_channel(
+                    let p0 = self.streams[st].phase[c];
+                    self.streams[st].phase[c] = self.run_channel(
                         wave,
-                        self.phase[c],
+                        p0,
                         inc,
                         duty_p,
                         dc,
@@ -333,74 +402,86 @@ impl SigGen {
         p
     }
 
-    fn rebuild_rate_annotation(&mut self) {
-        self.rate_annotation = encode_rate_annotation(self.fs_hz);
-    }
-
-    /// 改 fs：新采样轴——以"现在"重新锚定，下一帧带不连续标记（gap 0）。
-    fn set_fs_at(&mut self, fs: f64, now_ns: i64) {
+    /// 改某条流的 fs：新采样轴——以"现在"重新锚定，下一帧带不连续标记（gap 0）。
+    fn set_fs_at(&mut self, st: usize, fs: f64, now_ns: i64) {
         let fs = fs.clamp(1e3, 1e8);
-        if fs == self.fs_hz {
+        let s = &mut self.streams[st];
+        if fs == s.fs_hz {
             return;
         }
-        self.anchor_index = self.index;
-        self.anchor_t0_ns = now_ns;
-        self.fs_hz = fs;
-        self.pending_disc = true;
-        self.rebuild_rate_annotation();
+        s.anchor_index = s.index;
+        s.anchor_t0_ns = now_ns;
+        s.fs_hz = fs;
+        s.pending_disc = true;
+        s.rate_annotation = encode_rate_annotation(fs);
     }
 
-    /// 一个 tick：发到 `now_ns` 该存在的样本数（受输出缓冲容量限制）。
+    /// 参数变了之后把两条流的率对齐到参数说的值。
+    fn retune_streams(&mut self, now_ns: i64) {
+        for st in 0..self.streams.len() {
+            let fs = self.target_fs(st);
+            self.set_fs_at(st, fs, now_ns);
+        }
+    }
+
+    /// 一个 tick：每个在发的口都发到 `now_ns` 该存在的样本数（受输出缓冲容量限制）。
     fn generate(&mut self, now_ns: i64, outputs: &mut [FrameOut]) -> ProcessOutcome {
-        let port = if self.i16_out { PORT_I16 } else { PORT_F32 };
+        for &port in self.emit.ports() {
+            self.generate_port(port, now_ns, outputs);
+        }
+        ProcessOutcome::Ok
+    }
+
+    /// 一个口的一个 tick。
+    fn generate_port(&mut self, port: usize, now_ns: i64, outputs: &mut [FrameOut]) {
         let Some(out) = outputs.get_mut(port) else {
-            return ProcessOutcome::Ok;
+            return;
         };
-        let elem = if self.i16_out { 2 } else { 4 };
+        let elem = if port == PORT_I16 { 2 } else { 4 };
         let bytes_per_scan = self.channels * elem;
         let cap_scans = out.capacity().saturating_sub(ANNOTATION_RESERVE) / bytes_per_scan;
 
         let mut gap = 0u64;
-        if self.pending_gap > 0 {
+        if self.streams[port].pending_gap > 0 {
             // 像真丢样本：序号跳过去，时间照走，帧头说明缺了几拍。
-            gap = self.pending_gap;
-            self.index += gap;
-            self.pending_gap = 0;
+            gap = self.streams[port].pending_gap;
+            self.streams[port].index += gap;
+            self.streams[port].pending_gap = 0;
         }
 
-        let elapsed = (now_ns - self.anchor_t0_ns).max(0) as f64 / 1e9;
-        let target = self.anchor_index + (elapsed * self.fs_hz) as u64;
-        let due = target.saturating_sub(self.index) as usize;
+        let st = &self.streams[port];
+        let elapsed = (now_ns - st.anchor_t0_ns).max(0) as f64 / 1e9;
+        let target = st.anchor_index + (elapsed * st.fs_hz) as u64;
+        let due = target.saturating_sub(st.index) as usize;
         let scans = due.min(cap_scans);
         if scans == 0 {
             // 这个 tick 没有到期的样本——不发空帧（壳体会跳过），序号不动。
-            return ProcessOutcome::Ok;
+            return;
         }
 
-        let index = self.index;
+        let (index, seq, anchor_index, anchor_t0_ns, fs_hz, disc) =
+            (st.index, st.seq, st.anchor_index, st.anchor_t0_ns, st.fs_hz, st.pending_disc);
         let written = {
             let buf = out.buffer_mut();
-            self.fill(buf, scans)
+            self.fill(port, buf, scans)
         };
         out.set_written(written);
-        out.header.seq = self.seq;
+        out.header.seq = seq;
         out.header.sample_index = index;
         out.header.n_samples = scans as u32;
-        out.header.t0_ns =
-            self.anchor_t0_ns + (((index - self.anchor_index) as f64 / self.fs_hz) * 1e9) as i64;
-        if gap > 0 || self.pending_disc {
+        out.header.t0_ns = anchor_t0_ns + (((index - anchor_index) as f64 / fs_hz) * 1e9) as i64;
+        if gap > 0 || disc {
             out.header.set_discontinuity(gap);
-            self.pending_disc = false;
+            self.streams[port].pending_disc = false;
         }
-        if !out.set_annotation(RATE_ANNOTATION_SCHEMA, &self.rate_annotation) {
+        if !out.set_annotation(RATE_ANNOTATION_SCHEMA, &self.streams[port].rate_annotation) {
             // 只有容量算错才会到这里；注解是契约的一部分，宁可这一帧不发。
             out.set_written(0);
-            return ProcessOutcome::Ok;
+            return;
         }
 
-        self.seq += 1;
-        self.index += scans as u64;
-        ProcessOutcome::Ok
+        self.streams[port].seq += 1;
+        self.streams[port].index += scans as u64;
     }
 }
 
@@ -412,8 +493,9 @@ impl Plugin for SigGen {
         }
         let mut g = SigGen {
             fs_hz: 1_000_000.0,
+            fs2_hz: 0.0,
             channels: 1,
-            i16_out: false,
+            emit: Emit::F32,
             waves: vec![Wave::Sine],
             freq_hz: 1000.0,
             amplitude_v: 0.5,
@@ -423,37 +505,40 @@ impl Plugin for SigGen {
             noise_v: 0.0,
             gap_samples: 1000,
             glitch_v: 1.0,
-            seq: 0,
-            index: 0,
-            anchor_index: 0,
-            anchor_t0_ns: 0,
-            phase: [0; MAX_CHANNELS],
+            streams: [Stream::new(1_000_000.0), Stream::new(1_000_000.0)],
             rng: 0x9E37_79B9_7F4A_7C15,
-            pending_gap: 0,
-            pending_disc: false,
-            pending_glitch: false,
-            rate_annotation: Vec::new(),
             lut,
         };
         g.reset_phases();
-        g.rebuild_rate_annotation();
         g
     }
 
     fn set_param(&mut self, id: &str, value: &ParamValue) {
         match (id, value) {
             ("dtype", ParamValue::String(s)) | ("dtype", ParamValue::Enum(s)) => match s.trim() {
-                "f32" => self.i16_out = false,
-                "i16" => self.i16_out = true,
+                "f32" => self.emit = Emit::F32,
+                "i16" => self.emit = Emit::I16,
+                "both" => self.emit = Emit::Both,
+                // 不认识的名字不改——静默换成别的口就是发着发着换了一路
                 _ => {}
             },
-            ("fs_hz", ParamValue::F64(v)) => self.set_fs_at(*v, mono_ns()),
+            ("fs_hz", ParamValue::F64(v)) => {
+                self.fs_hz = v.clamp(1e3, 1e8);
+                self.retune_streams(mono_ns());
+            }
+            ("fs2_hz", ParamValue::F64(v)) => {
+                // 0 = 跟 fs_hz；别的值只作用在 i16 口上
+                self.fs2_hz = if *v <= 0.0 { 0.0 } else { v.clamp(1e3, 1e8) };
+                self.retune_streams(mono_ns());
+            }
             ("channels", ParamValue::U32(v)) => {
                 let n = (*v as usize).clamp(1, MAX_CHANNELS);
                 if n != self.channels {
                     self.channels = n;
                     // 帧布局变了：下一帧带断，让消费方重展布局。
-                    self.pending_disc = true;
+                    for st in &mut self.streams {
+                        st.pending_disc = true;
+                    }
                 }
             }
             ("waveforms", ParamValue::String(s)) | ("waveforms", ParamValue::Enum(s)) => {
@@ -476,13 +561,13 @@ impl Plugin for SigGen {
     }
 
     fn start(&mut self) -> ProcessOutcome {
-        self.seq = 0;
-        self.index = 0;
-        self.anchor_index = 0;
-        self.anchor_t0_ns = mono_ns();
-        self.pending_gap = 0;
-        self.pending_disc = false;
-        self.pending_glitch = false;
+        // 两条流锚在同一时刻、同一相位：绝对时间上它们是同一根信号（见 [`Stream`]）
+        let now = mono_ns();
+        for st in 0..self.streams.len() {
+            let fs = self.target_fs(st);
+            self.streams[st] = Stream::new(fs.clamp(1e3, 1e8));
+            self.streams[st].anchor_t0_ns = now;
+        }
         self.reset_phases();
         ProcessOutcome::Ok
     }
@@ -493,8 +578,16 @@ impl Plugin for SigGen {
 
     fn invoke_action(&mut self, id: &str) {
         match id {
-            "inject_gap" => self.pending_gap = self.gap_samples,
-            "inject_glitch" => self.pending_glitch = true,
+            "inject_gap" => {
+                for st in &mut self.streams {
+                    st.pending_gap = self.gap_samples;
+                }
+            }
+            "inject_glitch" => {
+                for st in &mut self.streams {
+                    st.pending_glitch = true;
+                }
+            }
             "reset_phase" => self.reset_phases(),
             _ => {}
         }
@@ -514,7 +607,9 @@ mod tests {
 
     fn gen() -> SigGen {
         let mut g = SigGen::new(&manifest());
-        g.anchor_t0_ns = 0;
+        for st in &mut g.streams {
+            st.anchor_t0_ns = 0;
+        }
         g
     }
 
@@ -524,9 +619,11 @@ mod tests {
         let mut b1 = vec![0u8; cap];
         let mut outs = [FrameOut::new(&mut b0), FrameOut::new(&mut b1)];
         g.generate(now_ns, &mut outs);
-        let port = if g.i16_out { PORT_I16 } else { PORT_F32 };
+        let port = if g.emit == Emit::I16 { PORT_I16 } else { PORT_F32 };
         let other = 1 - port;
-        assert_eq!(outs[other].written(), 0, "另一个口不该发");
+        if g.emit != Emit::Both {
+            assert_eq!(outs[other].written(), 0, "另一个口不该发");
+        }
         let o = &outs[port];
         if o.written() == 0 {
             return None;
@@ -548,6 +645,55 @@ mod tests {
         b.chunks_exact(2)
             .map(|c| i16::from_le_bytes(c.try_into().unwrap()))
             .collect()
+    }
+
+    /// `dtype = "both"`：两个口同时发、各自一个率，而且在**绝对时间**上是同一根
+    /// 信号——多源示波器验收拿这个当已知真值（同一拍上两路该读到同一个值）。
+    #[test]
+    fn both_两个口同时发_各自一个率_绝对时间上同一根信号() {
+        let mut g = gen();
+        g.set_param("dtype", &ParamValue::String("both".into()));
+        g.set_param("fs_hz", &ParamValue::F64(1_000_000.0));
+        g.set_param("fs2_hz", &ParamValue::F64(250_000.0));
+        g.set_param("freq_hz", &ParamValue::F64(1_000.0));
+        g.set_param("amplitude_v", &ParamValue::F64(0.9));
+        // set_param 会以 mono_ns() 重锚；测试要可预期的锚点，锚回 0（start() 在真机上
+        // 做的是同一件事：两条流同一时刻、同一相位）
+        for st in &mut g.streams {
+            st.anchor_t0_ns = 0;
+            st.anchor_index = 0;
+            st.index = 0;
+            st.pending_disc = false;
+        }
+        g.reset_phases();
+
+        let mut b0 = vec![0u8; 1 << 20];
+        let mut b1 = vec![0u8; 1 << 20];
+        let mut outs = [FrameOut::new(&mut b0), FrameOut::new(&mut b1)];
+        g.generate(10_000_000, &mut outs);
+        let (w0, w1) = (outs[PORT_F32].written(), outs[PORT_I16].written());
+        assert!(w0 > 0 && w1 > 0, "两个口都要发（{w0}, {w1}）");
+        let (h0, h1) = (outs[PORT_F32].header, outs[PORT_I16].header);
+        assert_eq!(h0.n_samples, 10_000, "f32 口 1 MS/s × 10 ms");
+        assert_eq!(h1.n_samples, 2_500, "i16 口 250 kS/s × 10 ms");
+        assert_eq!((h0.sample_index, h1.sample_index), (0, 0), "两条各走各的序号轴");
+        assert_eq!((h0.t0_ns, h1.t0_ns), (0, 0));
+
+        let (s0, a0) = h0.split_payload(&b0[..w0]);
+        let (s1, a1) = h1.split_payload(&b1[..w1]);
+        assert_eq!(decode_rate_annotation(a0.unwrap()), Some(1_000_000.0), "每个口的率注解说自己的率");
+        assert_eq!(decode_rate_annotation(a1.unwrap()), Some(250_000.0));
+
+        // 绝对时间对齐：f32 的第 4k 拍与 i16 的第 k 拍是同一时刻
+        let (v0, v1) = (f32s(s0), i16s(s1));
+        let mut worst = 0.0f64;
+        for k in 0..v1.len() {
+            let a = v0[4 * k] as f64;
+            let b = v1[k] as f64 / 32768.0;
+            worst = worst.max((a - b).abs());
+        }
+        assert!(worst < 2e-3, "两个口在同一时刻不是同一个值：差 {worst}");
+        assert!(v0.iter().any(|x| x.abs() > 0.5), "别是一条零线");
     }
 
     #[test]
@@ -575,7 +721,7 @@ mod tests {
     #[test]
     fn 按墙钟出样本_序号与t0是真时间_每帧带率注解() {
         let mut g = gen();
-        g.set_fs_at(1e6, 0);
+        g.set_fs_at(PORT_F32, 1e6, 0);
         // 1 ms 后该有 1000 拍
         let (h, s, ann) = tick(&mut g, 1_000_000, 1 << 16).unwrap();
         assert_eq!(h.n_samples, 1000);
@@ -600,7 +746,7 @@ mod tests {
     #[test]
     fn 正弦值对_1khz_at_48k() {
         let mut g = gen();
-        g.set_fs_at(48_000.0, 0);
+        g.set_fs_at(PORT_F32, 48_000.0, 0);
         g.set_param("freq_hz", &ParamValue::F64(1000.0));
         g.set_param("amplitude_v", &ParamValue::F64(1.0));
         let (_, s, _) = tick(&mut g, 1_000_000_000, 1 << 16).unwrap();
@@ -627,7 +773,7 @@ mod tests {
     #[test]
     fn i16_口按满量程编码_削顶() {
         let mut g = gen();
-        g.set_fs_at(48_000.0, 0);
+        g.set_fs_at(PORT_F32, 48_000.0, 0);
         g.set_param("dtype", &ParamValue::String("i16".into()));
         g.set_param("waveforms", &ParamValue::String("square".into()));
         g.set_param("amplitude_v", &ParamValue::F64(0.5));
@@ -643,13 +789,13 @@ mod tests {
     #[test]
     fn 多通道交织_相位按步进错开() {
         let mut g = gen();
-        g.set_fs_at(48_000.0, 0);
+        g.set_fs_at(PORT_F32, 48_000.0, 0);
         g.set_param("channels", &ParamValue::U32(2));
         g.set_param("freq_hz", &ParamValue::F64(1000.0));
         g.set_param("amplitude_v", &ParamValue::F64(1.0));
         g.set_param("phase_step_deg", &ParamValue::F64(90.0));
         g.reset_phases();
-        g.pending_disc = false; // 改通道数的那次断这里不看，只看相位
+        g.streams[PORT_F32].pending_disc = false; // 改通道数的那次断这里不看，只看相位
         let (h, s, _) = tick(&mut g, 100_000_000, 1 << 16).unwrap();
         let v = f32s(&s);
         assert_eq!(v.len(), h.n_samples as usize * 2);
@@ -671,7 +817,7 @@ mod tests {
     #[test]
     fn 波形形状() {
         let mut g = gen();
-        g.set_fs_at(1000.0, 0);
+        g.set_fs_at(PORT_F32, 1000.0, 0);
         g.set_param("freq_hz", &ParamValue::F64(10.0)); // 100 拍一周期
         g.set_param("amplitude_v", &ParamValue::F64(1.0));
         g.set_param("duty", &ParamValue::F64(0.3));
@@ -714,8 +860,8 @@ mod tests {
         ] {
             g.set_param("waveforms", &ParamValue::String(name.into()));
             g.reset_phases();
-            g.index = 0;
-            g.anchor_index = 0;
+            g.streams[PORT_F32].index = 0;
+            g.streams[PORT_F32].anchor_index = 0;
             let (_, s, _) = tick(&mut g, 1_000_000_000, 1 << 16).unwrap();
             let v = f32s(&s);
             assert!(v.len() >= 1000, "{name}");
@@ -731,7 +877,7 @@ mod tests {
     #[test]
     fn inject_gap_像真丢样本_序号跳_帧头带断与gap() {
         let mut g = gen();
-        g.set_fs_at(1e6, 0);
+        g.set_fs_at(PORT_F32, 1e6, 0);
         let (h, _, _) = tick(&mut g, 1_000_000, 1 << 16).unwrap();
         assert_eq!(h.n_samples, 1000);
         g.set_param("gap_samples", &ParamValue::U32(300));
@@ -754,9 +900,9 @@ mod tests {
     #[test]
     fn 改fs是新采样轴_重锚_带断_注解变() {
         let mut g = gen();
-        g.set_fs_at(1e6, 0);
+        g.set_fs_at(PORT_F32, 1e6, 0);
         let _ = tick(&mut g, 1_000_000, 1 << 16).unwrap(); // index 1000
-        g.set_fs_at(2e6, 1_000_000);
+        g.set_fs_at(PORT_F32, 2e6, 1_000_000);
         let (h, _, ann) = tick(&mut g, 1_500_000, 1 << 16).unwrap();
         assert_ne!(h.flags & FLAG_DISCONTINUITY, 0);
         assert_eq!(h.gap_samples, 0);
@@ -772,7 +918,7 @@ mod tests {
     #[test]
     fn inject_glitch_下一帧第一拍_ch0() {
         let mut g = gen();
-        g.set_fs_at(1e6, 0);
+        g.set_fs_at(PORT_F32, 1e6, 0);
         g.set_param("channels", &ParamValue::U32(2));
         g.set_param("amplitude_v", &ParamValue::F64(0.1));
         g.set_param("glitch_v", &ParamValue::F64(0.9));
@@ -788,7 +934,7 @@ mod tests {
     #[test]
     fn 容量限制_追赶不越界_注解总在() {
         let mut g = gen();
-        g.set_fs_at(1e8, 0);
+        g.set_fs_at(PORT_F32, 1e8, 0);
         g.set_param("channels", &ParamValue::U32(4));
         // 1 ms @ 100 MS/s × 4 ch × 4 B = 1.6 MB 该到期；给 64 KiB 的缓冲只能装一部分
         let (h, s, ann) = tick(&mut g, 1_000_000, 1 << 16).unwrap();
@@ -805,7 +951,7 @@ mod tests {
     #[test]
     fn 未对齐的缓冲照样写对() {
         let mut g = gen();
-        g.set_fs_at(48_000.0, 0);
+        g.set_fs_at(PORT_F32, 48_000.0, 0);
         g.set_param("waveforms", &ParamValue::String("square".into()));
         g.set_param("amplitude_v", &ParamValue::F64(1.0));
         let mut raw = vec![0u8; 4096 + 1];
@@ -823,7 +969,7 @@ mod tests {
     /// `cargo test --release -- --ignored throughput --nocapture`。
     fn bench(label: &str, i16: bool, ch: u32, waves: &str) -> f64 {
         let mut g = gen();
-        g.set_fs_at(1e8, 0);
+        g.set_fs_at(PORT_F32, 1e8, 0);
         g.set_param(
             "dtype",
             &ParamValue::String(if i16 { "i16" } else { "f32" }.into()),
@@ -869,7 +1015,7 @@ mod tests {
     #[ignore]
     fn throughput_100ms_per_s_i16_4ch() {
         let mut g = gen();
-        g.set_fs_at(1e8, 0);
+        g.set_fs_at(PORT_F32, 1e8, 0);
         g.set_param("dtype", &ParamValue::String("i16".into()));
         g.set_param("channels", &ParamValue::U32(4));
         g.set_param(
