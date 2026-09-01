@@ -1080,9 +1080,9 @@ impl MeasureSetting {
 /// ```text
 /// 窗口时间   = timebase.span_s                 （**一屏**；屏上十格，s/div = span_s / 10）
 /// 每通道深度 = floor(depth.points / 通道数)
-/// fs         = 1-2-5 向下取档( min( clock.fs_max_hz / 通道数,
-///                                   每通道深度 / 窗口时间,
-///                                   源的率 ) )
+/// fs         = min( clock.fs_max_hz / 通道数,                 ← 通道交织，不取档
+///                    1-2-5 向下取档( 每通道深度 / 窗口时间 ),   ← 只有这一路取档
+///                    源的率 )
 /// 存储点数   = 窗口时间 × fs                    （≤ 每通道深度）
 /// ```
 ///
