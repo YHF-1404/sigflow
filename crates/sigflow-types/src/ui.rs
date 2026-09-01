@@ -362,10 +362,216 @@ impl std::fmt::Display for ColumnRef {
 // 示波器 setup（persisted in the binding as `bind.scope`）
 // ---------------------------------------------------------------------------
 
+/// 示波器的时钟。
+///
+/// - `native`（缺省，现状）：环跟着**唯一**的源走——存源的原生 dtype、存储率 =
+///   `fs_native / D`（D 整数、超预算走入口峰值检测、每 scan 存一对 min/max）。
+///   保留它是因为 100 MS/s 下峰值检测能保住 1 拍宽的毛刺，**任何重采样都会把毛刺
+///   滤掉**：抓毛刺就得走这条。只能有一个源。
+/// - `fixed`：示波器有自己的采样率，任何率、任何 dtype 的源都重采样到这根时钟上，
+///   于是多口、多节点（同主机）的通道能进同一个环、同一次触发、同一屏。环每 scan
+///   每列存**一个值**（不存对），列 `kind` 是 enum / bitfield / counter 的一律 ZOH
+///   不插值（给状态量插出中间值是画假）。
+///
+/// `fs_hz` 省略 = auto：取各源实测率的最大值，再按壳体上限封顶。**上限归壳体**
+/// （环境变量 `SIGFLOW_SCOPE_MAX_FS`，缺省 8e6），这里只查 > 0——同 `depth_bytes`
+/// 的分工。`mode = native` 时不许给 `fs_hz`（给了说明写的人以为它有用）。
+///
+/// 超预算时降的是**示波器时钟**，不是源率（见 [`ScopeConfig::budget_bytes_per_s`]）。
+///
+/// 一期 `fixed` 环恒 f32。想用 i16 换深度得先定量化标度的出处（列 `bound`？每通道
+/// full-scale？），那是个决定不是个字段，二期再加 `clock.dtype`。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub struct ScopeClock {
+    #[serde(default)]
+    pub mode: ClockMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub fs_hz: Option<f64>,
+}
+
+/// 时钟模式，见 [`ScopeClock`]。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub enum ClockMode {
+    #[default]
+    Native,
+    Fixed,
+}
+
+impl ScopeClock {
+    pub fn is_fixed(&self) -> bool {
+        self.mode == ClockMode::Fixed
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        match (self.mode, self.fs_hz) {
+            (ClockMode::Native, Some(_)) => Err(
+                "clock: mode = native 跟着源走，不接受 fs_hz（要自己的采样率写 mode = \"fixed\"）"
+                    .to_string(),
+            ),
+            (_, Some(f)) if !(f.is_finite() && f > 0.0) => {
+                Err(format!("clock.fs_hz must be > 0 (got {f})"))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// 一台示波器的一个源：某个节点的某个口的某几列。
+///
+/// `node` 省略 = 挂控件的那个节点（环的 owner）。**同主机**才行——跨主机要等
+/// `sigflow_types::time` 的 wall/mono 锚点对，壳体会直接拒。`channels` 空 = 整口。
+/// 多源只在 `clock.mode = fixed` 下成立（没有共同网格就没有共同的一拍）。
+///
+/// **名字，不是下标**：通道引用（[`ChanRef::source`]）按名字指源。缺省名 = `port`
+/// （给了 `node` 就是 `node/port`），重名就得给其中一个写 `name`。之所以不用
+/// `sources` 的下标：下标是位置，中间插一个源、删一个源，所有引用会**悄悄**指到
+/// 另一路去；名字错了 validate 当场报，这跟"口加一列就错位"是同一笔账
+/// （见 [`ColumnRef`]）。名字里不能有 `:`——文本形式 `源:列` 靠它分段。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub struct ScopeSource {
+    /// 引用这个源用的名字。省略 = `port` 或 `node/port`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub name: Option<String>,
+    /// 节点 id，省略 = 挂控件的那个节点。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub node: Option<String>,
+    /// 口 id（在 `node` 的命名空间里）。
+    pub port: String,
+    /// 进环的列。空 = 整口。
+    #[serde(default)]
+    pub channels: Vec<ColumnRef>,
+}
+
+impl ScopeSource {
+    /// 引用这个源用的名字：`name`，没写就是 `port` / `node/port`。
+    pub fn effective_name(&self) -> String {
+        match (&self.name, &self.node) {
+            (Some(n), _) => n.clone(),
+            (None, Some(nd)) => format!("{nd}/{}", self.port),
+            (None, None) => self.port.clone(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.port.trim().is_empty() {
+            return Err("port is required".to_string());
+        }
+        if let Some(n) = &self.node {
+            if n.trim().is_empty() {
+                return Err("node must not be empty (省略 = 本节点)".to_string());
+            }
+        }
+        if let Some(n) = &self.name {
+            if n.trim().is_empty() {
+                return Err("name must not be empty".to_string());
+            }
+        }
+        let name = self.effective_name();
+        if name.contains(':') {
+            return Err(format!(
+                "源名 {name:?} 里有 ':'（文本形式 `源:列` 靠它分段）——写一个不带 ':' 的 name"
+            ));
+        }
+        for c in &self.channels {
+            c.validate().map_err(|e| format!("channels: {e}"))?;
+        }
+        Ok(())
+    }
+}
+
+/// 带源的通道引用：多源示波器上，光有列 id 指不出唯一一路。
+///
+/// `source` 省略 = 唯一的那个源（单源简写、或只有一个 `[[sources]]`）；有两个以上
+/// 源时省略是**错**，不是"取第 0 个"——猜错了就是量错了一路。
+///
+/// 序列化是把 [`ColumnRef`] 摊平进来，所以老的写法一字不改照旧能读：
+/// `source = { column = "z" }`、`{ source = "rotor", column = "z", group = 0 }`。
+/// 文本形式（CLI）：`rotor:0/theta`、`iu`（不指源）。
+///
+/// **相等仍然是"写法相等"**，而且现在有两层：`{column="v"}` 与
+/// `{source="rotor", column="v"}` 在单源上指同一路却判不等。当键、做集合比较之前
+/// 先用 [`ScopeConfig::resolve`] 落到 (源槽位, 列) 再比。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub struct ChanRef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub source: Option<String>,
+    #[serde(flatten)]
+    pub column: ColumnRef,
+}
+
+impl ChanRef {
+    pub fn new(source: Option<String>, column: ColumnRef) -> Self {
+        ChanRef { source, column }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(s) = &self.source {
+            if s.trim().is_empty() {
+                return Err("empty source name".to_string());
+            }
+        }
+        self.column.validate()
+    }
+}
+
+impl From<ColumnRef> for ChanRef {
+    fn from(column: ColumnRef) -> Self {
+        ChanRef {
+            source: None,
+            column,
+        }
+    }
+}
+
+impl std::str::FromStr for ChanRef {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+        match s.split_once(':') {
+            Some((src, col)) => {
+                let src = src.trim();
+                if src.is_empty() {
+                    return Err(format!(
+                        "empty source name in {s:?} (want <source>:<column>)"
+                    ));
+                }
+                Ok(ChanRef {
+                    source: Some(src.to_string()),
+                    column: col.parse()?,
+                })
+            }
+            None => Ok(ChanRef {
+                source: None,
+                column: s.parse()?,
+            }),
+        }
+    }
+}
+
+impl std::fmt::Display for ChanRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.source {
+            Some(s) => write!(f, "{s}:{}", self.column),
+            None => write!(f, "{}", self.column),
+        }
+    }
+}
+
 /// 示波器触发。住在采集引擎里——它决定"哪一窗给你"，不是画法。
 ///
 /// 引擎在原生 dtype 上逐拍跑（电平换成码），语义：
-/// - 源列在写环时读整行，所以**不要求在 `channels` 里**（外触发）。
+/// - `clock = native` 下源列在写环时读整行，所以**不要求在 `channels` 里**
+///   （外触发）；`clock = fixed` 下环里只有选中的列，没进环的列不在共同网格上，
+///   所以触发源**必须在该源的选列里**，validate 会拦。
 /// - 电平与原始物理量比；显示侧的 AC 耦合只是把画法平移，不改比较。
 /// - NaN 拍透明：不触发、不更新比较状态。
 /// - 比较态：rising 时 `v ≤ level − h/2` 进 Low、`v ≥ level + h/2` 进 High，
@@ -384,7 +590,7 @@ impl std::fmt::Display for ColumnRef {
 pub struct ScopeTrigger {
     #[serde(default)]
     pub kind: TrigKind,
-    pub source: ColumnRef,
+    pub source: ChanRef,
     /// 物理量单位（整数口按列的 scale/offset 换算后的量）。
     pub level: f64,
     #[serde(default)]
@@ -393,8 +599,9 @@ pub struct ScopeTrigger {
     /// UI 给"抗噪 = 源列可见 pk-pk 的 5%"一键写入。
     #[serde(default)]
     pub hysteresis: f64,
-    /// 释抑：触发后至少再过这么多拍才能再触发。按**源口的拍数**（抽取前）——与
-    /// `span_scans` 同一度量，引擎按抽取比换成存储拍；UI 有率时并排显示时间。
+    /// 释抑：触发后至少再过这么多拍才能再触发。`clock = native` 下按**源口的拍数**
+    /// （抽取前），引擎按抽取比换成存储拍；`clock = fixed` 下按**示波器时钟的拍**
+    /// （没有 D，不换算）。与 `span_scans` 同一度量；UI 有率时并排显示时间。
     #[serde(default)]
     pub holdoff_samples: u32,
     #[serde(default)]
@@ -498,9 +705,11 @@ impl std::str::FromStr for TrigMode {
 
 /// 时基：一屏多宽、触发点在屏幕哪儿。
 ///
-/// 跨度二选一：`span_s`（秒，有率的口）或 `span_scans`（**源口的拍数**，抽取前；
-/// 没有率的口也能用）。拍数一律指源口的拍——入口峰值检测抽取 D:1 之后引擎自己
-/// 除以 D 换成存储拍，操作者不用知道 D；`holdoff_samples` 同一度量。
+/// 跨度二选一：`span_s`（秒，有率的口）或 `span_scans`（拍数，没有率的口也能用）。
+/// 拍的度量看时钟：`clock = native` 下是**源口的拍**（抽取前）——入口峰值检测
+/// 抽取 D:1 之后引擎自己除以 D 换成存储拍，操作者不用知道 D；`clock = fixed` 下
+/// 是**示波器时钟的拍**（重采样后每 scan 一个值，没有 D）。`holdoff_samples`、
+/// [`CursorPair`] 同一度量。
 /// `position` = 触发点（t = 0）在屏幕的位置，[0, 1]，缺省 0.5——示波器上这是
 /// 水平位置旋钮，不是触发的属性；pre = round(position × span_scans)。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -631,7 +840,7 @@ pub enum Interp {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ts", derive(TS))]
 pub struct VerticalSetting {
-    pub channel: ColumnRef,
+    pub channel: ChanRef,
     /// 每格多少（物理量），> 0。
     pub v_div: f64,
     /// 屏幕中线对应的值（物理量）。
@@ -684,7 +893,7 @@ pub enum Gate {
 }
 
 /// 一对时间光标：相对时间零点（触发窗以触发拍为 0、自由跑 / roll 以右缘为 0）
-/// 的**存储拍**数，可为负。它是 setup 的一部分（真机的光标随 setup 存），UI
+/// 的**存储拍**数，可为负（`clock = fixed` 下存储拍就是示波器时钟的拍）。它是 setup 的一部分（真机的光标随 setup 存），UI
 /// 拖光标即时 `scope_set`、手势结束回写绑定。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(TS))]
@@ -702,7 +911,7 @@ pub struct CursorPair {
 #[cfg_attr(feature = "ts", derive(TS))]
 pub struct MeasureSetting {
     #[serde(default)]
-    pub channels: Vec<ColumnRef>,
+    pub channels: Vec<ChanRef>,
     #[serde(default)]
     pub gate: Gate,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -733,8 +942,8 @@ impl MeasureSetting {
 /// dtype、按列分平面、16× min/max 金字塔），独立线程做触发 / 余辉 / 视图，浏览
 /// 器只拉视图与密度图。设计在 sigflow-core `docs/scope.md`。
 ///
-/// 几何（改了要重建环）= `channels` + `depth_bytes` + `budget_bytes_per_s`；其余
-/// 就地生效。
+/// 几何（改了要重建环）= `clock` + `channels` / `sources` + `depth_bytes` +
+/// `budget_bytes_per_s`；其余就地生效。
 ///
 /// ```toml
 /// [widgets.bind.scope]
@@ -761,18 +970,50 @@ impl MeasureSetting {
 /// channels = [{ column = "iu" }]
 /// gate = "screen"
 /// ```
+///
+/// 多源（示波器自己的时钟，各源重采样到它上面；通道引用按**源名**指路）：
+///
+/// ```toml
+/// [widgets.bind.scope]
+/// clock = { mode = "fixed", fs_hz = 1000000 }   # 省 fs_hz = auto（取各源实测率最大值，壳体封顶）
+/// depth_bytes = 1073741824
+/// timebase = { span_s = 0.01, position = 0.5 }
+/// [[widgets.bind.scope.sources]]
+/// port = "loop"                                  # 名字缺省 = "loop"
+/// channels = [{ column = "iu" }, { column = "iv" }]
+/// [[widgets.bind.scope.sources]]
+/// node = "foc"
+/// port = "rotor"                                 # 名字缺省 = "foc/rotor"
+/// channels = [{ column = "theta", group = 0 }]
+/// [widgets.bind.scope.trigger]
+/// source = { source = "foc/rotor", column = "theta", group = 0 }
+/// level = 0.5
+/// [[widgets.bind.scope.vertical]]
+/// channel = { source = "loop", column = "iu" }
+/// v_div = 50
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ts", derive(TS))]
 pub struct ScopeConfig {
-    /// 进环的列。空 = 整口。字节预算按选中列的 dtype 字节算。
+    /// 时钟：跟着源走（native，缺省）还是示波器自己的采样率（fixed）。多源、
+    /// 混合率、混合 dtype 都只在 fixed 下成立。改了要重建环。
+    #[serde(default)]
+    pub clock: ScopeClock,
+    /// 进环的列，**单源简写**：源 = 控件绑定的那个口。空 = 整口。字节预算按选中
+    /// 列的 dtype 字节算。与 `sources` 二选一。
     #[serde(default)]
     pub channels: Vec<ColumnRef>,
+    /// 多源：一台示波器收几个口（可跨节点，同主机）的通道。非空时以它为准，
+    /// `channels` 必须空。两个以上源要 `clock.mode = fixed`。
+    #[serde(default)]
+    pub sources: Vec<ScopeSource>,
     /// 存储深度（字节）。上限归壳体（环境变量），这里只要 > 0。
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub depth_bytes: u64,
-    /// 写环字节预算（B/s）。`fs_allowed = budget / Σ 选中列字节`；超了先向生产
-    /// 方请求降率（口声明了 `negotiable.rate_param`），不支持就入口峰值检测抽取
-    /// ——峰值存储每 scan 存一对，抽取比按存储字节算。
+    /// 写环字节预算（B/s）。`fs_allowed = budget / Σ 选中列字节`。`clock = native`
+    /// 下超了先向生产方请求降率（口声明了 `negotiable.rate_param`），不支持就入口
+    /// 峰值检测抽取——峰值存储每 scan 存一对，抽取比按存储字节算；`clock = fixed`
+    /// 下降的是**示波器时钟**，源率不动。
     #[serde(default = "default_budget")]
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub budget_bytes_per_s: u64,
@@ -807,14 +1048,66 @@ fn default_roll_threshold() -> f64 {
 }
 
 impl ScopeConfig {
+    /// 源的槽位数。单源简写（`sources` 空）也算一个源。
+    pub fn source_count(&self) -> usize {
+        self.sources.len().max(1)
+    }
+
+    /// 各源的引用名，槽位序。单源简写没有名字（空表）。
+    pub fn source_names(&self) -> Vec<String> {
+        self.sources.iter().map(|s| s.effective_name()).collect()
+    }
+
+    /// 第 `slot` 个源的选列（空 = 整口）。单源简写 → `channels`。
+    pub fn channels_of(&self, slot: usize) -> &[ColumnRef] {
+        match self.sources.get(slot) {
+            Some(s) => &s.channels,
+            None if slot == 0 && self.sources.is_empty() => &self.channels,
+            None => &[],
+        }
+    }
+
+    /// 把通道引用落到 (源槽位, 列引用)。**当键、做集合比较之前先过这一步**——
+    /// [`ChanRef`] / [`ColumnRef`] 的相等是写法相等，两边写法不同就互相看不见。
+    ///
+    /// 没指名源：只有一个源时是它，两个以上是错——不猜第 0 个，猜错了是量错一路。
+    pub fn resolve<'a>(&self, r: &'a ChanRef) -> Result<(usize, &'a ColumnRef), String> {
+        match &r.source {
+            None if self.source_count() == 1 => Ok((0, &r.column)),
+            None => Err(format!(
+                "这台示波器有 {} 个源，通道引用要写 source（{}）",
+                self.source_count(),
+                self.source_names().join(" / ")
+            )),
+            Some(name) if self.sources.is_empty() => Err(format!(
+                "指名了源 {name:?}，但这台示波器是单源简写（channels = 绑定的那个口）——\
+                 要多源就把 channels 换成 [[sources]]"
+            )),
+            Some(name) => self
+                .sources
+                .iter()
+                .position(|s| &s.effective_name() == name)
+                .map(|i| (i, &r.column))
+                .ok_or_else(|| {
+                    format!(
+                        "找不到源 {name:?}（有：{}）",
+                        self.source_names().join(" / ")
+                    )
+                }),
+        }
+    }
+
     /// 几何相同 = 环不用重建。
     pub fn same_geometry(&self, other: &ScopeConfig) -> bool {
-        self.channels == other.channels
+        self.clock == other.clock
+            && self.channels == other.channels
+            && self.sources == other.sources
             && self.depth_bytes == other.depth_bytes
             && self.budget_bytes_per_s == other.budget_bytes_per_s
     }
 
-    /// 声明层面的自洽性。列 id 存不存在、深度超不超壳体上限，要到壳体才知道。
+    /// 声明层面的自洽性。列 id 存不存在、节点/口在不在图上、深度与
+    /// `clock.fs_hz` 超不超壳体上限，要到壳体才知道。
     pub fn validate(&self) -> Result<(), String> {
         if self.depth_bytes == 0 {
             return Err("depth_bytes must be > 0".to_string());
@@ -831,12 +1124,48 @@ impl ScopeConfig {
                 self.roll_threshold_s
             ));
         }
+        self.clock.validate()?;
         for c in &self.channels {
             c.validate().map_err(|e| format!("channels: {e}"))?;
+        }
+        if !self.sources.is_empty() && !self.channels.is_empty() {
+            return Err(
+                "channels（单源简写）与 sources 二选一：写了 sources 就把 channels 清空"
+                    .to_string(),
+            );
+        }
+        for (i, src) in self.sources.iter().enumerate() {
+            src.validate().map_err(|e| format!("sources[{i}]: {e}"))?;
+        }
+        let names = self.source_names();
+        for (i, n) in names.iter().enumerate() {
+            if let Some(j) = names[..i].iter().position(|m| m == n) {
+                return Err(format!(
+                    "sources[{i}] 与 sources[{j}] 解析出同一个名字 {n:?}——给其中一个写 name"
+                ));
+            }
+        }
+        if self.sources.len() > 1 && !self.clock.is_fixed() {
+            return Err(format!(
+                "{} 个源要 clock.mode = \"fixed\"：native 是跟着唯一的源走（原生 dtype + 整数抽取），\
+                 多源没有共同网格",
+                self.sources.len()
+            ));
         }
         self.timebase.validate()?;
         if let Some(t) = &self.trigger {
             t.validate().map_err(|e| format!("trigger: {e}"))?;
+            let (slot, col) = self
+                .resolve(&t.source)
+                .map_err(|e| format!("trigger.source: {e}"))?;
+            // native：源列在写环时读整行，外触发不必在选列里。
+            // fixed：环里只有选中的列，没进环就不在共同网格上，触发跑不了。
+            if self.clock.is_fixed() && !col.selected_in(self.channels_of(slot)) {
+                return Err(format!(
+                    "trigger.source: {} 不在选列里——clock = fixed 下触发源必须进环",
+                    t.source
+                ));
+            }
         }
         self.acq.validate()?;
         if self.acq.mode == AcqMode::Average && self.trigger.is_none() {
@@ -844,7 +1173,10 @@ impl ScopeConfig {
         }
         for (i, v) in self.vertical.iter().enumerate() {
             v.validate().map_err(|e| format!("vertical[{i}]: {e}"))?;
-            if !v.channel.selected_in(&self.channels) {
+            let (slot, col) = self
+                .resolve(&v.channel)
+                .map_err(|e| format!("vertical[{i}].channel: {e}"))?;
+            if !col.selected_in(self.channels_of(slot)) {
                 return Err(format!(
                     "vertical[{i}]: channel {} is not in channels",
                     v.channel
@@ -855,7 +1187,10 @@ impl ScopeConfig {
         for (i, c) in self.measure.channels.iter().enumerate() {
             c.validate()
                 .map_err(|e| format!("measure.channels[{i}]: {e}"))?;
-            if !c.selected_in(&self.channels) {
+            let (slot, col) = self
+                .resolve(c)
+                .map_err(|e| format!("measure.channels[{i}]: {e}"))?;
+            if !col.selected_in(self.channels_of(slot)) {
                 return Err(format!("measure.channels[{i}]: {c} is not in channels"));
             }
         }
@@ -1204,6 +1539,190 @@ timebase = { span_scans = 4000 }
         let mut e = a.clone();
         e.budget_bytes_per_s = 1;
         assert!(!a.same_geometry(&e));
+    }
+
+    const MULTI: &str = r#"
+clock = { mode = "fixed", fs_hz = 1000000 }
+depth_bytes = 1073741824
+timebase = { span_s = 0.01 }
+[[sources]]
+port = "loop"
+channels = [{ column = "iu" }, { column = "iv" }]
+[[sources]]
+node = "foc"
+port = "rotor"
+channels = [{ column = "theta", group = 0 }]
+[trigger]
+source = { source = "foc/rotor", column = "theta", group = 0 }
+level = 0.5
+[[vertical]]
+channel = { source = "loop", column = "iu" }
+v_div = 50
+[measure]
+channels = [{ source = "loop", column = "iv" }]
+"#;
+
+    fn multi() -> ScopeConfig {
+        toml::from_str(MULTI).unwrap()
+    }
+
+    #[test]
+    fn 多源的源名缺省是口_带节点是节点斜杠口() {
+        let c = multi();
+        assert_eq!(c.source_names(), vec!["loop", "foc/rotor"]);
+        assert_eq!(c.source_count(), 2);
+        assert!(c.validate().is_ok());
+
+        // name 显式给了就用它
+        let mut c2 = c.clone();
+        c2.sources[1].name = Some("enc".to_string());
+        c2.trigger.as_mut().unwrap().source.source = Some("enc".to_string());
+        assert_eq!(c2.source_names(), vec!["loop", "enc"]);
+        assert!(c2.validate().is_ok());
+    }
+
+    #[test]
+    fn 通道引用按源名落到槽位_不指名时两个以上源是错() {
+        let c = multi();
+        let (slot, col) = c.resolve(&c.trigger.as_ref().unwrap().source).unwrap();
+        assert_eq!(slot, 1);
+        assert_eq!(col.to_string(), "0/theta");
+        let (slot, _) = c.resolve(&c.vertical[0].channel).unwrap();
+        assert_eq!(slot, 0);
+
+        // 不指名：两个源以上不猜第 0 个
+        let bare: ChanRef = "iu".parse().unwrap();
+        let e = c.resolve(&bare).unwrap_err();
+        assert!(
+            e.contains("2 个源") && e.contains("loop / foc/rotor"),
+            "{e}"
+        );
+
+        // 名字打错：当场报，并把有哪些源列出来
+        let wrong: ChanRef = "rotor:theta".parse().unwrap();
+        let e = c.resolve(&wrong).unwrap_err();
+        assert!(e.contains("找不到源") && e.contains("foc/rotor"), "{e}");
+
+        // 只有一个源时可以不指名
+        let mut one = c.clone();
+        one.sources.pop();
+        one.trigger.as_mut().unwrap().source = "iu".parse().unwrap();
+        one.measure.channels = vec!["iv".parse().unwrap()];
+        one.vertical[0].channel = "iu".parse().unwrap();
+        assert_eq!(one.resolve(&one.vertical[0].channel).unwrap().0, 0);
+        assert!(one.validate().is_ok());
+    }
+
+    #[test]
+    fn 源重名要报_因为引用按名字指路() {
+        let mut c = multi();
+        c.sources[1].node = None;
+        c.sources[1].port = "loop".to_string();
+        let e = c.validate().unwrap_err();
+        assert!(e.contains("同一个名字") && e.contains("name"), "{e}");
+    }
+
+    #[test]
+    fn 单源简写与多源二选一_简写下不许指名源() {
+        let mut c = multi();
+        c.channels = vec!["iu".parse().unwrap()];
+        assert!(c.validate().unwrap_err().contains("二选一"));
+
+        let mut c = setup(); // 简写
+        c.trigger.as_mut().unwrap().source = "loop:z".parse().unwrap();
+        let e = c.validate().unwrap_err();
+        assert!(e.contains("单源简写") && e.contains("sources"), "{e}");
+    }
+
+    #[test]
+    fn native_只能一个源_也不接受_fs_hz() {
+        let mut c = multi();
+        c.clock = ScopeClock::default();
+        let e = c.validate().unwrap_err();
+        assert!(e.contains("2 个源") && e.contains("fixed"), "{e}");
+
+        c.sources.pop();
+        c.trigger.as_mut().unwrap().source = "iu".parse().unwrap();
+        c.measure.channels = vec!["iv".parse().unwrap()];
+        c.vertical[0].channel = "iu".parse().unwrap();
+        assert!(c.validate().is_ok(), "native + 一个显式源是合法的");
+
+        c.clock.fs_hz = Some(1e6);
+        assert!(c.validate().unwrap_err().contains("不接受 fs_hz"));
+
+        let mut c = multi();
+        c.clock.fs_hz = Some(0.0);
+        assert!(c.validate().unwrap_err().contains("fs_hz"));
+        c.clock.fs_hz = None; // auto
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn fixed_下触发源必须进环_native_下不必() {
+        // fixed：环里只有选中的列，外触发无处可跑
+        let mut c = multi();
+        c.trigger.as_mut().unwrap().source = "loop:iw".parse().unwrap();
+        let e = c.validate().unwrap_err();
+        assert!(
+            e.contains("trigger.source") && e.contains("必须进环"),
+            "{e}"
+        );
+
+        // native：源列在写环时读整行，外触发照旧
+        let mut c = setup();
+        c.trigger.as_mut().unwrap().source = "iq_ref".parse().unwrap();
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn 带源的通道引用_文本形式往返_序列化摊平不动老形状() {
+        let r: ChanRef = "foc/rotor:2/iq".parse().unwrap();
+        assert_eq!(r.source.as_deref(), Some("foc/rotor"));
+        assert_eq!(
+            r.column,
+            ColumnRef::Column {
+                column: "iq".into(),
+                group: Some(2)
+            }
+        );
+        assert_eq!(r.to_string(), "foc/rotor:2/iq");
+        assert_eq!("@3".parse::<ChanRef>().unwrap().to_string(), "@3");
+        assert!(":iq".parse::<ChanRef>().is_err(), "空源名要报");
+
+        // 不指源的引用序列化后和老的 ColumnRef 一模一样
+        let bare: ChanRef = "iu".parse().unwrap();
+        assert_eq!(serde_json::to_string(&bare).unwrap(), r#"{"column":"iu"}"#);
+        assert_eq!(
+            serde_json::to_string(&r).unwrap(),
+            r#"{"source":"foc/rotor","column":"iq","group":2}"#
+        );
+        // 老写法照旧读得进来
+        let old: ChanRef = serde_json::from_str(r#"{"column":"z"}"#).unwrap();
+        assert_eq!(old, ChanRef::from("z".parse::<ColumnRef>().unwrap()));
+    }
+
+    #[test]
+    fn 多源_setup_能写回_toml_再读回来() {
+        // 绑定要落进 node.toml：摊平的引用必须能序列化成 TOML 再读回来
+        let c = multi();
+        let s = toml::to_string(&c).expect("serialize");
+        let back: ScopeConfig = toml::from_str(&s).expect("deserialize");
+        assert_eq!(back, c, "{s}");
+        assert!(back.validate().is_ok());
+    }
+
+    #[test]
+    fn 时钟与源进几何() {
+        let a = multi();
+        let mut b = a.clone();
+        b.refresh_hz = 5.0;
+        assert!(a.same_geometry(&b));
+        let mut c = a.clone();
+        c.clock.fs_hz = Some(2e6);
+        assert!(!a.same_geometry(&c), "改示波器时钟要重建环");
+        let mut d = a.clone();
+        d.sources[0].channels.pop();
+        assert!(!a.same_geometry(&d));
     }
 
     #[test]

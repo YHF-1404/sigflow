@@ -161,7 +161,69 @@ TOML 形状在 `ScopeConfig` 的文档注释里。要点：
 
 ## 7. 归属
 
-- sigflow（本仓）：§1–§5 的类型与声明（已落）、§6 sig-gen。
+- sigflow（本仓）：§1–§5 的类型与声明（已落）、§6 sig-gen、§8 固定时钟与多源的类型。
 - sigflow-core：引擎 / RPC / 协议 / 前端 / connect 的 dtype 校验 / tap 的 scale·offset 换算
   与 PEAK_PAIRS 透传 / `waveform_chart` 与 tap 的退回。
 - 合并与装包归 hml；两仓 `feat/scope` 都建在 `feat/tap-scope` 上。
+
+## 8. 固定时钟与多源（2026-09-01）
+
+出处：hml 试用后要求"示波器有自己的采样率、任何率/任何位宽的源都重采样到这根时钟
+上、所有口的所有通道能进同一台示波器，8 MS/s 够用"——**由 sigflow-core-03 转述，hml
+本人没在我这会话说过**。引擎侧设计（重采样核、混合写环、跨节点 attach、代价）在
+sigflow-core `docs/scope.md` §12；本节是类型层的落地。
+
+### 8.1 落了什么（`ui.rs`）
+
+- `ScopeClock { mode: native | fixed, fs_hz: Option<f64> }`，`ScopeConfig.clock`。
+  `native` = 现状（跟着唯一的源走、原生 dtype、整数抽取 + 峰值对，100 MS/s 抓 1 拍
+  毛刺那条路留着）；`fixed` = 示波器自己的时钟，各源重采样上来，每 scan 每列一个值。
+  `fs_hz` 省略 = auto。**进 `same_geometry`**。
+- `ScopeSource { name, node, port, channels }`，`ScopeConfig.sources`。`node` 省略 = 挂
+  控件的那个节点；`channels` 空 = 整口。老的 `ScopeConfig.channels` 留作**单源简写**
+  （源 = 绑定的那个口），两者互斥。
+- `ChanRef { source: Option<String>, #[serde(flatten)] column: ColumnRef }`：
+  `trigger.source`、`vertical[].channel`、`measure.channels` 的类型从 `ColumnRef` 换成
+  它。摊平序列化 → **老 setup 一字不改照旧能读**（`source = { column = "z" }`），
+  TOML 写回也验过（`多源_setup_能写回_toml_再读回来`）。文本形式 `源:列`，
+  如 `foc/rotor:0/theta`。
+- 解析入口 `ScopeConfig::resolve(&ChanRef) -> (源槽位, &ColumnRef)`，配套
+  `source_count` / `source_names` / `channels_of(slot)`。
+
+### 8.2 我改了提案的哪几条，为什么
+
+1. **源引用按名字，不按 `sources` 下标**（提案是 `source: Option<u32>`）。下标是位置：
+   中间插一个源、删一个源，所有引用会**悄悄**指到另一路去——那正是"口加一列就错位"
+   这笔账（§4 `ColumnRef` 那条）。名字错了 validate 当场报。缺省名 = `port`，给了
+   `node` 就是 `node/port`；重名要求写 `name`，名字里不许有 `:`。
+2. **两个以上源时省略 `source` 是错，不是"取第 0 个"**。猜错了就是量错一路，而这一路
+   在屏幕上和量对了长得一模一样。只有一个源时可以省。
+3. **`fs_hz` 的上限归壳体**（`SIGFLOW_SCOPE_MAX_FS`，缺省 8e6），类型层只查有限且
+   > 0——和 `depth_bytes` 同一分工，类型层不该知道某台机器的环境变量。
+   `mode = native` 时给 `fs_hz` 是错（写的人以为它有用）。
+4. **`fixed` 下触发源必须在选列里**。`native` 的外触发成立是因为写环时读整行；`fixed`
+   下环里只有选中的列，没进环就不在共同网格上，触发无处可跑。validate 拦。
+5. **拍的度量跟着时钟走**（提案没说，会当场差一个 D）：`span_scans`、
+   `holdoff_samples`、`CursorPair` 在 `native` 下是**源口的拍**（引擎自己 /D），在
+   `fixed` 下是**示波器时钟的拍**（没有 D，不换算）。
+6. **`fixed` 环一期恒 f32**。§12.1 提的"可选 i16 换深度"没进类型层：i16 存重采样后的
+   物理量需要一个量化标度，标度从哪来（列 `bound`？每通道 full-scale？）是个决定，
+   不是个字段。定了再加 `clock.dtype`，二期。
+
+### 8.3 校验规则（`ScopeConfig::validate`）
+
+`channels` 与 `sources` 二选一；每个 source 的 `port` 非空、`node`/`name` 给了就非空、
+解析名唯一且不含 `:`；两个以上源要 `clock.mode = fixed`；`native` 不接受 `fs_hz`，
+`fs_hz` 给了要有限且 > 0；`trigger.source`/`vertical[].channel`/`measure.channels` 都要
+能 `resolve` 到一个源，且（除 `native` 的外触发外）在该源的选列里。
+
+列 id 存不存在、节点/口在不在图上、`fs_hz` 与 `depth_bytes` 超不超本机上限、无率口在
+`fixed` 下拒绝入环、停摆源填 NaN 标 missing——都到壳体才知道，归引擎。
+
+### 8.4 给引擎的两条提醒
+
+- `same_geometry` 比的是**写法相等**（`clock`、`channels`、`sources` 逐字段比）：把
+  `v` 改写成 `0/v`、把源名从缺省改成显式 `name`，都会多重建一次环。保守，不算错，
+  但别在回写绑定时顺手规范化写法。
+- 前端的通道键要用 `resolve` 落出来的 `(源槽位, 列 id, 组)`，别拿 `ChanRef` 当键——
+  它现在有两层写法相等（省不省源、省不省组），上一轮"触发源下拉显示为空"就是这个。

@@ -16,12 +16,12 @@ use std::path::PathBuf;
 
 use ts_rs::TS;
 
-use sigflow_types::frame::FrameHeader;
 use sigflow_types::doc::{DocEdit, EditTarget, Finding, Provenance, ResolvedField};
+use sigflow_types::frame::FrameHeader;
 use sigflow_types::manifest::{
     ActionDescriptor, BindableTarget, BitDecl, Bound, BoundRef, ColumnDecl, ColumnGroups,
-    ColumnKind, ConfigField, Direction, DocumentDecl, EnumCase, ParameterDescriptor,
-    Negotiable, PluginManifest, PluginSource, PortDescriptor, Presentation, Tone, WidgetManifest,
+    ColumnKind, ConfigField, Direction, DocumentDecl, EnumCase, Negotiable, ParameterDescriptor,
+    PluginManifest, PluginSource, PortDescriptor, Presentation, Tone, WidgetManifest,
 };
 use sigflow_types::node::{
     Connection, ControlConnection, NodeConfig, NodeDisplay, NodeMeta, NodePosition, ParentPortDecl,
@@ -41,15 +41,16 @@ use sigflow_types::rpc::{
 };
 use sigflow_types::schema::{
     ActiveDecl, CollectionDecl, CollectionItem, DocSchema, DocState, DocStatusFile, DocSyncStatus,
-    GroupDecl,
-    LibraryDecl, NodeDecl, ParamGroup, Rule, RuleKind, SectionDecl, Severity, SlotDecl,
+    GroupDecl, LibraryDecl, NodeDecl, ParamGroup, Rule, RuleKind, SectionDecl, Severity, SlotDecl,
     TargetStatus,
 };
-use sigflow_types::semantic::{BackpressurePolicy, BatchSpec, Dtype, PayloadSchemaId, SemanticType};
+use sigflow_types::semantic::{
+    BackpressurePolicy, BatchSpec, Dtype, PayloadSchemaId, SemanticType,
+};
 use sigflow_types::ui::{
-    AcqMode, AcqSetting, BindKind, ColumnRef, Coupling, CursorPair, Gate, Interp, Layout, MeasureSetting,
-    ScopeConfig, ScopeTrigger, TapConfig, TapMode, Timebase, TrigKind, TrigMode, TrigSlope,
-    UiWidget, VerticalSetting, WidgetBinding,
+    AcqMode, AcqSetting, BindKind, ChanRef, ClockMode, ColumnRef, Coupling, CursorPair, Gate,
+    Interp, Layout, MeasureSetting, ScopeClock, ScopeConfig, ScopeSource, ScopeTrigger, TapConfig,
+    TapMode, Timebase, TrigKind, TrigMode, TrigSlope, UiWidget, VerticalSetting, WidgetBinding,
 };
 
 /// Export each listed type plus its transitive dependencies into `dir`.
@@ -86,7 +87,8 @@ fn export_bindings() {
         // ui widgets
         UiWidget, WidgetBinding, BindKind, Layout, TapConfig, TapMode,
         // tap 选列；示波器 setup
-        ColumnRef, ScopeConfig, ScopeTrigger, TrigKind, TrigSlope, TrigMode, Timebase,
+        ColumnRef, ChanRef, ScopeClock, ClockMode, ScopeSource,
+        ScopeConfig, ScopeTrigger, TrigKind, TrigSlope, TrigMode, Timebase,
         AcqMode, AcqSetting, Coupling, Interp, VerticalSetting, MeasureSetting, Gate, CursorPair,
         // rpc envelope + method payloads
         RpcMessage, RpcRequest, RpcResponse, RpcError, RpcNotification,
