@@ -574,6 +574,11 @@ UI 手里还攥着旧 id：
   scope_state(6) → 拒：no scope with id 6
 ```
 
+dex 在另一张图（foc-sil，三台常驻、一台多源）上独立复现，数量级更难看：`osc_loop`
+认领到 `scope_id = 1`，两秒攒了 **388552 拍**；把 `scope_list` 拿回来的那份 setup 一个字
+不改回写绑定，`scope_id` 变 4，388552 拍全没了，旧号上 `scope_set` / `scope_state` 一律
+`no scope with id 1`。两张图、两种 setup、同一条链。
+
 一条因果链把全部症状串起来：拨旋钮 → 600 ms 后回写绑定 → 环被拆、`scope_id` 换新 →
 UI 手里的 id 成了死号 → **之后每一次 `scope_set` 都被拒**（拒的不是配置，是号码）→
 刷新页面重新认领拿到新号 → 又好了。深度也是这么丢的。
