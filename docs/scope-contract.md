@@ -247,6 +247,21 @@ serde 的原话），节点照常起。
 就是默认一个采样率，操作者看到的是一台"自己变了率"的示波器——把不正常换成正常。宽容
 反序列化则对**将来所有**破坏性改动都成立，不只这一次。
 
+**类型层的形状**（sigflow `feat/scope`，已落）：`WidgetBinding.scope` 的类型从
+`Option<ScopeConfig>` 变成 `Option<ScopeSetup>`：
+
+```rust
+pub enum ScopeSetup {
+    Ok(Box<ScopeConfig>),
+    Broken { raw: serde_json::Value, error: String },   // 原样留着 + serde 的原话
+}
+```
+
+反序列化先接成通用值（这一步不会失败）再试着解析成配置，失败就留 `Broken`；序列化时
+`Broken` **把原值一字不改写回去**。拿配置用 `WidgetBinding::scope_config()`（坏的返回
+`None`——坏的绝不能被当成配置用），拿原话用 `scope_error()`，判断用 `scope_is_broken()`。
+TS 那边仍是 `scope?: ScopeConfig`（健康形状），"这台是坏的"走 `scope_list.failed`。
+
 **宽容读不许变成有损写**（这是宽容方案自带的坑）：坏掉的那份绑定必须**原样留在
 node.toml 里**，控件在用户明确重设之前**不许回写**——否则控件用缺省 setup 起来、用户
 拨一下旋钮，就把原来那份（源、触发、垂直全在里面）覆盖掉了。丢配置比起不来更糟：起

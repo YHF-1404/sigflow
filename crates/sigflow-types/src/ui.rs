@@ -60,9 +60,98 @@ pub struct WidgetBinding {
     pub tap: Option<TapConfig>,
     /// Only meaningful when `kind == Port` — 示波器的 setup（[`ScopeConfig`]）。
     /// 一个口绑定要么是 tap（订阅）要么是 scope（采集引擎），按控件类型二选一。
+    ///
+    /// **读不了也不许丢**，见 [`ScopeSetup`]：拿 [`WidgetBinding::scope_config`]
+    /// 取解析好的那份，拿 [`WidgetBinding::scope_error`] 取出错的原话。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub scope: Option<ScopeConfig>,
+    #[cfg_attr(feature = "ts", ts(optional, as = "Option<ScopeConfig>"))]
+    pub scope: Option<ScopeSetup>,
+}
+
+impl WidgetBinding {
+    /// 解析好的示波器 setup；坏的（读不了的）返回 None——**坏的绝不能被当成配置用**。
+    pub fn scope_config(&self) -> Option<&ScopeConfig> {
+        match &self.scope {
+            Some(ScopeSetup::Ok(c)) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// 这份 setup 读不了的原话（能读就是 None）。控件拿它显示，并据此**关掉回写**。
+    pub fn scope_error(&self) -> Option<&str> {
+        match &self.scope {
+            Some(ScopeSetup::Broken { error, .. }) => Some(error),
+            _ => None,
+        }
+    }
+
+    /// 有一份读不了的 setup 在这儿。
+    pub fn scope_is_broken(&self) -> bool {
+        self.scope_error().is_some()
+    }
+}
+
+/// 绑定里的示波器 setup：**读得了就是配置，读不了就原样留着**。
+///
+/// 为什么不是 `Option<ScopeConfig>`（docs/scope-contract.md §9.4）：`bind.scope` 读不
+/// 出来时 serde 会让整个 `node.toml` 解析失败，于是**整个节点起不来，数据面跟着没
+/// 了**——一个调试用的示波器声明不该拖住电机控制器。所以坏的那份在这一层被接住：
+/// 节点照常起，这台示波器标成坏的、大声报错（永久类失败，立刻喊，不等第一帧）。
+///
+/// **宽容读不许变成有损写**：坏的那份连原始的键值一起留着、序列化时一字不改地写回
+/// 去，控件在用户明确重设之前**不许回写**——否则控件用缺省 setup 起来、用户随手拨一
+/// 下旋钮，就把原来那份（源、触发、垂直全在里面）覆盖没了。**丢配置比起不来更糟：
+/// 起不来看得见，覆盖看不见。**
+///
+/// 这是**发布前**的兜底，不是长期方案：真发布之后破坏性改动要走版本与迁移
+/// （`scope.version` + 升级路径），不能靠"读不了就先留着"。
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScopeSetup {
+    Ok(Box<ScopeConfig>),
+    /// 读不了：`raw` 是原样的值（写回去一字不改），`error` 是 serde 的原话。
+    Broken {
+        raw: serde_json::Value,
+        error: String,
+    },
+}
+
+impl ScopeSetup {
+    pub fn as_config(&self) -> Option<&ScopeConfig> {
+        match self {
+            ScopeSetup::Ok(c) => Some(c),
+            ScopeSetup::Broken { .. } => None,
+        }
+    }
+}
+
+impl From<ScopeConfig> for ScopeSetup {
+    fn from(c: ScopeConfig) -> Self {
+        ScopeSetup::Ok(Box::new(c))
+    }
+}
+
+impl Serialize for ScopeSetup {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        match self {
+            ScopeSetup::Ok(c) => c.serialize(ser),
+            // 原样写回去：宽容读不许变成有损写
+            ScopeSetup::Broken { raw, .. } => raw.serialize(ser),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ScopeSetup {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        // 先接成通用值（这一步不会失败），再试着解析成配置——**失败也要把原值留住**
+        let raw = serde_json::Value::deserialize(de)?;
+        match ScopeConfig::deserialize(&raw) {
+            Ok(c) => Ok(ScopeSetup::Ok(Box::new(c))),
+            Err(e) => Ok(ScopeSetup::Broken {
+                raw,
+                error: e.to_string(),
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -2007,6 +2096,72 @@ channels = [{ source = "loop", column = "iv" }]
         assert!(!a.same_geometry(&d));
     }
 
+    /// 读不了的 setup 不许让整份配置解析失败（否则**整个节点起不来**），也不许被
+    /// 悄悄丢掉或改写——原样留着 + 出错的原话。
+    #[test]
+    fn 读不了的_setup_不拖垮解析_而且原样留着() {
+        // 老写法：depth_bytes 已经没了，depth 是必填
+        let old = r#"
+kind = "port"
+target = "loop"
+[scope]
+channels = [{ column = "iu" }]
+depth_bytes = 268435456
+refresh_hz = 30
+timebase = { span_s = 0.002 }
+[scope.trigger]
+source = { column = "z" }
+level = 0.5
+"#;
+        let b: WidgetBinding = toml::from_str(old).expect("整份绑定照样读得进来——节点要起得来");
+        assert_eq!(b.target, "loop");
+        assert!(b.scope_config().is_none(), "坏的绝不能被当成配置用");
+        assert!(b.scope_is_broken());
+        let e = b.scope_error().expect("要有出错的原话");
+        assert!(e.contains("depth"), "原话要指到真正缺的那个字段：{e}");
+
+        // 写回去一字不改：宽容读不许变成有损写
+        let back = toml::to_string(&b).unwrap();
+        assert!(
+            back.contains("depth_bytes = 268435456"),
+            "原来的键值要留着：{back}"
+        );
+        assert!(!back.contains("\ndepth ="), "不许凭空补一个 depth：{back}");
+        assert!(back.contains("level = 0.5"), "整段都要留着：{back}");
+        // 再读一遍还是同一份坏的（往返稳定，不会越写越走样）
+        let again: WidgetBinding = toml::from_str(&back).unwrap();
+        assert_eq!(again.scope, b.scope);
+
+        // JSON 那条路一样
+        let j = serde_json::to_string(&b).unwrap();
+        assert!(j.contains("\"depth_bytes\":268435456"), "{j}");
+        let jb: WidgetBinding = serde_json::from_str(&j).unwrap();
+        assert!(jb.scope_is_broken());
+    }
+
+    #[test]
+    fn 能读的_setup_照旧是配置_不受宽容影响() {
+        let b: WidgetBinding = toml::from_str(&format!(
+            "kind = \"port\"\ntarget = \"loop\"\n[scope]\n{}",
+            SETUP
+                .replace("[trigger]", "[scope.trigger]")
+                .replace("[acq]", "[scope.acq]")
+                .replace("[[vertical]]", "[[scope.vertical]]")
+                .replace("[measure]", "[scope.measure]")
+        ))
+        .unwrap();
+        let c = b.scope_config().expect("能读");
+        assert!(c.validate().is_ok());
+        assert_eq!(
+            b.scope,
+            Some(ScopeSetup::from(c.clone())),
+            "Ok 分支就是配置本身"
+        );
+        // 序列化出来跟直接序列化配置一模一样（没有多包一层）
+        let a = serde_json::to_value(b.scope.as_ref().unwrap()).unwrap();
+        assert_eq!(a, serde_json::to_value(c).unwrap());
+    }
+
     #[test]
     fn 绑定里的_scope_段随_widget_binding_往返() {
         let b: WidgetBinding = toml::from_str(&format!(
@@ -2018,8 +2173,9 @@ channels = [{ source = "loop", column = "iv" }]
                 .replace("[measure]", "[scope.measure]")
         ))
         .unwrap();
-        let sc = b.scope.as_ref().expect("scope section");
+        let sc = b.scope_config().expect("scope section");
         assert_eq!(sc.channels.len(), 4);
+        assert!(b.scope_error().is_none() && !b.scope_is_broken());
         assert!(b.tap.is_none());
         let s = serde_json::to_string(&b).unwrap();
         assert!(s.contains("\"scope\"") && !s.contains("\"tap\""), "{s}");
