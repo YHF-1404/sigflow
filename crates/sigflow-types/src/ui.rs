@@ -381,6 +381,10 @@ impl std::fmt::Display for ColumnRef {
 ///
 /// 一期 `fixed` 环恒 f32。想用 i16 换深度得先定量化标度的出处（列 `bound`？每通道
 /// full-scale？），那是个决定不是个字段，二期再加 `clock.dtype`。
+///
+/// **能照实读幅度的带宽只到 0.8 × fs/2**（≈ `fs/2.5`）：重采样的抗混叠滤波器在带
+/// 顶要滚降（实测 0.8 × 奈奎斯特 93.8%、0.9 × 奈奎斯特 73.1%，见 docs/scope-contract.md
+/// §8.4）。要量某个频率的峰峰值，时钟至少取它的 2.5 倍。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ts", derive(TS))]
 pub struct ScopeClock {
