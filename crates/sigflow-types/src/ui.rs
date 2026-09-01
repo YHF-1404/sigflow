@@ -949,6 +949,12 @@ impl MeasureSetting {
 /// 几何（改了要重建环）= `clock` + `channels` / `sources` + `depth_bytes` +
 /// `budget_bytes_per_s`；其余就地生效。
 ///
+/// **寿命看它是谁的**（docs/scope-contract.md §8.5）：`scope_create` 临时开的那台是
+/// **会话的**，跟 WebSocket 连接走、断线即收；写在 `bind.scope` 里的这一份是**节点
+/// 的**——声明就是拥有：节点起来它就起来、一直攒，浏览器刷新重新接上同一个环，
+/// 节点停或绑定删了才释放。身份是 **(挂控件的节点, 控件 alias)**，不是 `scope_id`。
+/// 深度在节点启动时就占住，装不下要在启动时报错，不许悄悄缩小。
+///
 /// ```toml
 /// [widgets.bind.scope]
 /// channels = [{ column = "iu" }, { column = "iv" }, { column = "iw" }, { column = "z" }]
