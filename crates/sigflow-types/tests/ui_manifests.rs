@@ -65,3 +65,18 @@ fn presentation_defaults_to_face_and_param_table_asks_for_a_page() {
         "手势库是一份 JSON——绑到数值参数上这个控件读不出东西"
     );
 }
+
+#[test]
+fn 示波器是整页控件_绑口_配置只有_label() {
+    // setup 全在 bind.scope（ScopeConfig），config 里只许有 label——旋钮不是控件配置。
+    let p = ui_dir().join("oscilloscope").join("manifest.toml");
+    let m: PluginManifest =
+        toml::from_str(&std::fs::read_to_string(&p).expect("read")).expect("parse");
+    let w = m.widget.expect("[widget]");
+    assert_eq!(w.widget_type, "oscilloscope");
+    assert_eq!(w.presentation, Presentation::Page);
+    assert_eq!(w.bindable_to.len(), 1);
+    assert_eq!(w.bindable_to[0].kind.as_str(), "port");
+    let keys: Vec<&String> = w.config_schema.keys().collect();
+    assert_eq!(keys, vec!["label"], "示波器的 config 只有 label，其余都是 setup");
+}

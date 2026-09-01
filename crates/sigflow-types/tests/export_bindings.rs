@@ -16,11 +16,11 @@ use std::path::PathBuf;
 
 use ts_rs::TS;
 
-use sigflow_types::frame::FrameHeader;
 use sigflow_types::doc::{DocEdit, EditTarget, Finding, Provenance, ResolvedField};
+use sigflow_types::frame::FrameHeader;
 use sigflow_types::manifest::{
     ActionDescriptor, BindableTarget, BitDecl, Bound, BoundRef, ColumnDecl, ColumnGroups,
-    ColumnKind, ConfigField, Direction, DocumentDecl, EnumCase, ParameterDescriptor,
+    ColumnKind, ConfigField, Direction, DocumentDecl, EnumCase, Negotiable, ParameterDescriptor,
     PluginManifest, PluginSource, PortDescriptor, Presentation, Tone, WidgetManifest,
 };
 use sigflow_types::node::{
@@ -41,12 +41,18 @@ use sigflow_types::rpc::{
 };
 use sigflow_types::schema::{
     ActiveDecl, CollectionDecl, CollectionItem, DocSchema, DocState, DocStatusFile, DocSyncStatus,
-    GroupDecl,
-    LibraryDecl, NodeDecl, ParamGroup, Rule, RuleKind, SectionDecl, Severity, SlotDecl,
+    GroupDecl, LibraryDecl, NodeDecl, ParamGroup, Rule, RuleKind, SectionDecl, Severity, SlotDecl,
     TargetStatus,
 };
-use sigflow_types::semantic::{BackpressurePolicy, BatchSpec, PayloadSchemaId, SemanticType};
-use sigflow_types::ui::{BindKind, Layout, TapConfig, UiWidget, WidgetBinding};
+use sigflow_types::semantic::{
+    BackpressurePolicy, BatchSpec, Dtype, PayloadSchemaId, SemanticType,
+};
+use sigflow_types::ui::{
+    AcqMode, AcqSetting, BindKind, ChanRef, ClockMode, ColumnRef, Coupling, CursorPair, Gate,
+    Interp, Layout, MeasureSetting, ScopeClock, ScopeConfig, ScopeDepth, ScopeSource, ScopeTrigger,
+    TapConfig, TapMode, Timebase, TrigKind, TrigMode, TrigSlope, UiWidget, VerticalSetting,
+    WidgetBinding,
+};
 
 /// Export each listed type plus its transitive dependencies into `dir`.
 macro_rules! export_all {
@@ -78,9 +84,13 @@ fn export_bindings() {
         // param
         ParamValue, ParamRange, ParamType, ControlScalar, DisplayHint, ParamGuard,
         // semantic / type system
-        SemanticType, PayloadSchemaId, BatchSpec, BackpressurePolicy,
+        SemanticType, Dtype, PayloadSchemaId, BatchSpec, BackpressurePolicy,
         // ui widgets
-        UiWidget, WidgetBinding, BindKind, Layout, TapConfig,
+        UiWidget, WidgetBinding, BindKind, Layout, TapConfig, TapMode,
+        // tap 选列；示波器 setup
+        ColumnRef, ChanRef, ScopeClock, ClockMode, ScopeDepth, ScopeSource,
+        ScopeConfig, ScopeTrigger, TrigKind, TrigSlope, TrigMode, Timebase,
+        AcqMode, AcqSetting, Coupling, Interp, VerticalSetting, MeasureSetting, Gate, CursorPair,
         // rpc envelope + method payloads
         RpcMessage, RpcRequest, RpcResponse, RpcError, RpcNotification,
         SetParamRequest, GetParamRequest, GetParamResponse, InvokeActionRequest,
@@ -96,7 +106,7 @@ fn export_bindings() {
         Direction, PortDescriptor, ParameterDescriptor, ActionDescriptor,
         DocumentDecl, Presentation,
         // 列契约（口的列怎么读）
-        ColumnDecl, ColumnKind, ColumnGroups, EnumCase, BitDecl, Bound, BoundRef, Tone,
+        ColumnDecl, ColumnKind, ColumnGroups, EnumCase, BitDecl, Bound, BoundRef, Tone, Negotiable,
         // configuration documents: schema shape, resolution, validation
         DocSchema, ParamGroup, SectionDecl, LibraryDecl,
         NodeDecl, GroupDecl, SlotDecl, CollectionDecl, CollectionItem, ActiveDecl,
