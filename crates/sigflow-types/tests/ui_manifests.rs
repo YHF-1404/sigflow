@@ -64,6 +64,20 @@ fn presentation_defaults_to_face_and_param_table_asks_for_a_page() {
         Some("string"),
         "手势库是一份 JSON——绑到数值参数上这个控件读不出东西"
     );
+
+    // 圆盘电机也是整页的，绑的是**生产口**（rotor，带列契约）；它往节点写的
+    // 两个参数走 config（hold_param / angle_param），不是第二个绑定——绑定只有
+    // 一个，这里钉住这一点。
+    let disc = read("motor-disc").widget.unwrap();
+    assert_eq!(disc.presentation, Presentation::Page);
+    assert_eq!(disc.bindable_to.len(), 1);
+    assert_eq!(disc.bindable_to[0].kind.as_str(), "port");
+    for k in ["hold_param", "angle_param", "burst_param"] {
+        assert!(
+            disc.config_schema.contains_key(k),
+            "交互写的参数名在 config 里改，不在绑定里改：缺 {k}"
+        );
+    }
 }
 
 #[test]
