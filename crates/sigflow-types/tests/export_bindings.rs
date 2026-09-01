@@ -49,8 +49,9 @@ use sigflow_types::semantic::{
 };
 use sigflow_types::ui::{
     AcqMode, AcqSetting, BindKind, ChanRef, ClockMode, ColumnRef, Coupling, CursorPair, Gate,
-    Interp, Layout, MeasureSetting, ScopeClock, ScopeConfig, ScopeSource, ScopeTrigger, TapConfig,
-    TapMode, Timebase, TrigKind, TrigMode, TrigSlope, UiWidget, VerticalSetting, WidgetBinding,
+    Interp, Layout, MeasureSetting, ScopeClock, ScopeConfig, ScopeDepth, ScopeSource, ScopeTrigger,
+    TapConfig, TapMode, Timebase, TrigKind, TrigMode, TrigSlope, UiWidget, VerticalSetting,
+    WidgetBinding,
 };
 
 /// Export each listed type plus its transitive dependencies into `dir`.
@@ -87,7 +88,7 @@ fn export_bindings() {
         // ui widgets
         UiWidget, WidgetBinding, BindKind, Layout, TapConfig, TapMode,
         // tap 选列；示波器 setup
-        ColumnRef, ChanRef, ScopeClock, ClockMode, ScopeSource,
+        ColumnRef, ChanRef, ScopeClock, ClockMode, ScopeDepth, ScopeSource,
         ScopeConfig, ScopeTrigger, TrigKind, TrigSlope, TrigMode, Timebase,
         AcqMode, AcqSetting, Coupling, Interp, VerticalSetting, MeasureSetting, Gate, CursorPair,
         // rpc envelope + method payloads

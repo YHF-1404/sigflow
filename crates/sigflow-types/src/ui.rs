@@ -362,25 +362,28 @@ impl std::fmt::Display for ColumnRef {
 // 示波器 setup（persisted in the binding as `bind.scope`）
 // ---------------------------------------------------------------------------
 
-/// 示波器的时钟。
+/// 示波器的时钟：一台示波器的采样率是**推导出来的**，不是设死的。
 ///
-/// - `native`（缺省，现状）：环跟着**唯一**的源走——存源的原生 dtype、存储率 =
-///   `fs_native / D`（D 整数、超预算走入口峰值检测、每 scan 存一对 min/max）。
-///   保留它是因为 100 MS/s 下峰值检测能保住 1 拍宽的毛刺，**任何重采样都会把毛刺
-///   滤掉**：抓毛刺就得走这条。只能有一个源。
-/// - `fixed`：示波器有自己的采样率，任何率、任何 dtype 的源都重采样到这根时钟上，
-///   于是多口、多节点（同主机）的通道能进同一个环、同一次触发、同一屏。环每 scan
-///   每列存**一个值**（不存对），列 `kind` 是 enum / bitfield / counter 的一律 ZOH
-///   不插值（给状态量插出中间值是画假）。
+/// 真示波器上没有"采样率"这个旋钮——你拨时基、选深度档，采样率是算出来的结果。
+/// 三种模式：
 ///
-/// `fs_hz` 省略 = auto：取各源实测率的最大值，再按壳体上限封顶。**上限归壳体**
-/// （环境变量 `SIGFLOW_SCOPE_MAX_FS`，缺省 8e6），这里只查 > 0——同 `depth_bytes`
-/// 的分工。`mode = native` 时不许给 `fs_hz`（给了说明写的人以为它有用）。
+/// - `auto`（**缺省**）：按控制律推导（见 [`ScopeConfig`] 顶上那段），随时基 /
+///   深度档 / 通道数变。这是仪器的行为。
+/// - `fixed { fs_hz }`：把率钉死，留给"我就是要这个率"的高级用法。**必须给
+///   `fs_hz`**——原来"省略 = 取各源最快的率"那个语义作废了，按时基推导比它有用。
+/// - `native`：环跟着**唯一**的源走——存源的原生 dtype、存储率 = `fs_native / D`
+///   （D 整数、超预算走入口峰值检测、每 scan 存一对 min/max）。保留它是因为
+///   100 MS/s 下峰值检测能保住 1 拍宽的毛刺，**任何重采样都会把毛刺滤掉**：抓毛刺
+///   就得走这条。只能有一个源。
 ///
-/// 超预算时降的是**示波器时钟**，不是源率（见 [`ScopeConfig::budget_bytes_per_s`]）。
+/// `auto` / `fixed` 下任何率、任何 dtype 的源都重采样到这根时钟上，于是多口、多节点
+/// （同主机）的通道能进同一个环、同一次触发、同一屏；环每 scan 每列存**一个值**
+/// （不存对），列 `kind` 是 enum / bitfield / counter 的一律 ZOH 不插值（给状态量插出
+/// 中间值是画假）。
 ///
-/// 一期 `fixed` 环恒 f32。想用 i16 换深度得先定量化标度的出处（列 `bound`？每通道
-/// full-scale？），那是个决定不是个字段，二期再加 `clock.dtype`。
+/// `fs_max_hz` 是**这台仪器的最大采样率**（推导的第一个上限，实际率还要除以通道
+/// 数——真机上通道共用 ADC 就是这样）。省略 = 用壳体的上限（环境变量
+/// `SIGFLOW_SCOPE_MAX_FS`）。上限归壳体、声明层只查 > 0，同 [`ScopeDepth`] 的分工。
 ///
 /// **能照实读幅度的带宽只到 0.8 × fs/2**（≈ `fs/2.5`）：重采样的抗混叠滤波器在带
 /// 顶要滚降（实测 0.8 × 奈奎斯特 93.8%、0.9 × 奈奎斯特 73.1%，见 docs/scope-contract.md
@@ -390,9 +393,28 @@ impl std::fmt::Display for ColumnRef {
 pub struct ScopeClock {
     #[serde(default)]
     pub mode: ClockMode,
+    /// 只在 `fixed` 下有意义，且必须给。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub fs_hz: Option<f64>,
+    /// 这台仪器的最大采样率（`auto` 推导用）。省略 = 壳体上限。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub fs_max_hz: Option<f64>,
+    /// 环里存什么（`auto` / `fixed`；`native` 存源的原生 dtype，这一项不看）。
+    /// 省略 = `f32`，只许 `f32` 或 `i16`。
+    ///
+    /// **`i16` 的量化标度跟垂直档走**（[`VerticalSetting`]）：
+    /// `标度 = v_div × 5 / 32767`、零点 = 该通道的 `offset`——屏幕 8 格，存 ±5 格
+    /// 留一圈余量（真机的 ADC 覆盖比屏幕大一圈，同一个道理）。**代价是 `v_div` /
+    /// `offset` 不再只是画法**：改了存进去的码就不是那个意思了，要清环重采
+    /// （真机上改垂直档也是重新采集）。**所以 `i16` 下量程不许自适应**——没写
+    /// [`VerticalSetting`] 的通道取列 `bound` 的满量程 / 8 格，没有 `bound` 就
+    /// 1.0/格；拿首帧观测去自适应会在第一个观众到场时清掉常驻示波器攒的一切
+    /// （同 docs/scope-contract.md §8.5 那条：**观测不许混进几何**）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub dtype: Option<crate::semantic::Dtype>,
 }
 
 /// 时钟模式，见 [`ScopeClock`]。
@@ -400,25 +422,125 @@ pub struct ScopeClock {
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(TS))]
 pub enum ClockMode {
+    /// 按控制律推导（缺省）。
     #[default]
-    Native,
+    Auto,
+    /// 钉死 `fs_hz`。
     Fixed,
+    /// 跟着唯一的源走（抓毛刺）。
+    Native,
 }
 
 impl ScopeClock {
+    /// 重采样到示波器自己的时钟上（`auto` 或 `fixed`）——多源、混合率、i16 存储
+    /// 都只在这两种下成立。
+    pub fn is_resampled(&self) -> bool {
+        self.mode != ClockMode::Native
+    }
+
     pub fn is_fixed(&self) -> bool {
         self.mode == ClockMode::Fixed
     }
 
+    /// 环里存的 dtype（`native` 下由源决定，返回 None）。
+    pub fn ring_dtype(&self) -> Option<crate::semantic::Dtype> {
+        self.is_resampled()
+            .then(|| self.dtype.unwrap_or(crate::semantic::Dtype::F32))
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         match (self.mode, self.fs_hz) {
-            (ClockMode::Native, Some(_)) => Err(
-                "clock: mode = native 跟着源走，不接受 fs_hz（要自己的采样率写 mode = \"fixed\"）"
+            (ClockMode::Fixed, None) => {
+                return Err(
+                    "clock: mode = fixed 要给 fs_hz（原来\"省略 = 取各源最快的率\"作废了——\
+                            按时基推导写 mode = \"auto\"）"
+                        .to_string(),
+                )
+            }
+            (ClockMode::Auto, Some(_)) => return Err(
+                "clock: mode = auto 的率是推导出来的，不接受 fs_hz（要钉死写 mode = \"fixed\"）"
                     .to_string(),
             ),
-            (_, Some(f)) if !(f.is_finite() && f > 0.0) => {
-                Err(format!("clock.fs_hz must be > 0 (got {f})"))
+            (ClockMode::Native, Some(_)) => {
+                return Err("clock: mode = native 跟着源走，不接受 fs_hz".to_string())
             }
+            (_, Some(f)) if !(f.is_finite() && f > 0.0) => {
+                return Err(format!("clock.fs_hz must be > 0 (got {f})"))
+            }
+            _ => {}
+        }
+        if let Some(f) = self.fs_max_hz {
+            if !(f.is_finite() && f > 0.0) {
+                return Err(format!("clock.fs_max_hz must be > 0 (got {f})"));
+            }
+        }
+        match self.dtype {
+            None => {}
+            Some(d) if !self.is_resampled() => {
+                return Err(format!(
+                    "clock.dtype = {} 只对 auto / fixed 有意义：native 存源的原生 dtype",
+                    d.as_str()
+                ))
+            }
+            Some(crate::semantic::Dtype::F32) | Some(crate::semantic::Dtype::I16) => {}
+            Some(d) => {
+                return Err(format!(
+                    "clock.dtype 只许 f32 或 i16（got {}）——环里存的是重采样后的物理量",
+                    d.as_str()
+                ))
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 存储深度：**按采样点算，不按字节**——仪器上写的是"100 Mpts"，不是"400 MB"。
+///
+/// `points` 是**所有通道合起来**的点数（真机的存储深度也是共用的）：
+/// `每通道 = floor(points / 通道数)`。深度档是 UI 的事——控件按 `max_points` 摆一
+/// 排档（十分之一、1-2-5、随便），**setup 里存的是选出来的点数本身**，不是档序号：
+/// 档序号的含义是一条公式，公式一旦在控件和壳体里各写一份就会悄悄对不上，屏幕上
+/// 写的深度和环里的深度不是一个数（同 [`ColumnRef`] 的"写法相等"、§8.5 的"观测混进
+/// 几何"是同一族账）。
+///
+/// 字节数的上限归壳体（环境变量），这里只查点数自洽。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub struct ScopeDepth {
+    /// 这台示波器的存储深度规格（点数，所有通道合计）。
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub max_points: u64,
+    /// 当前选的深度档（点数，≤ `max_points`）。省略 = 用满。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number"))]
+    pub points: Option<u64>,
+}
+
+impl ScopeDepth {
+    /// 当前档的点数（所有通道合计）。
+    pub fn points(&self) -> u64 {
+        self.points.unwrap_or(self.max_points).min(self.max_points)
+    }
+
+    /// 每通道能存多少点。通道数为 0 时返回 0。
+    pub fn per_channel(&self, channels: usize) -> u64 {
+        if channels == 0 {
+            0
+        } else {
+            self.points() / channels as u64
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.max_points == 0 {
+            return Err("depth.max_points must be > 0".to_string());
+        }
+        match self.points {
+            Some(0) => Err("depth.points must be > 0（省略 = 用满 max_points）".to_string()),
+            Some(p) if p > self.max_points => Err(format!(
+                "depth.points {p} 超过这台的规格 max_points {}",
+                self.max_points
+            )),
             _ => Ok(()),
         }
     }
@@ -840,7 +962,14 @@ pub enum Interp {
     Sinc,
 }
 
-/// 逐通道的垂直设置，键是列引用。没写的通道取缺省：v_div 由引擎首帧自适应。
+/// 逐通道的垂直设置，键是列引用。没写的通道取缺省。
+///
+/// **`clock.dtype = i16` 时这里不再只是画法**：环里存的码按 `v_div × 5 / 32767`
+/// 量化、以 `offset` 为零点（屏幕 8 格，存 ±5 格留一圈余量），所以改 `v_div` /
+/// `offset` **要清环**——存着的码不再是那个意思了（真机上改垂直档也是重新采集）。
+/// 相应地 **i16 下量程不许自适应**：没写这条的通道取列 `bound` 的满量程 / 8 格、
+/// 没有 `bound` 就 1.0/格，都是**声明**；拿首帧观测去自适应会在第一个观众到场时把
+/// 常驻示波器攒的一切清掉。`f32` 下（缺省）它仍然只是画法，自适应随便。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ts", derive(TS))]
 pub struct VerticalSetting {
@@ -946,8 +1075,32 @@ impl MeasureSetting {
 /// dtype、按列分平面、16× min/max 金字塔），独立线程做触发 / 余辉 / 视图，浏览
 /// 器只拉视图与密度图。设计在 sigflow-core `docs/scope.md`。
 ///
-/// 几何（改了要重建环）= `clock` + `channels` / `sources` + `depth_bytes` +
-/// `budget_bytes_per_s`；其余就地生效。
+/// **采样率与存储点数是推导出来的，不是设死的**（`clock.mode = auto`，缺省）：
+///
+/// ```text
+/// 窗口时间   = 10 × 时基                       （一屏十格，即 timebase.span_s）
+/// 每通道深度 = floor(depth.points / 通道数)
+/// fs         = 1-2-5 向下取档( min( clock.fs_max_hz / 通道数,
+///                                   每通道深度 / 窗口时间,
+///                                   源的率 ) )
+/// 存储点数   = 窗口时间 × fs                    （≤ 每通道深度）
+/// ```
+///
+/// 1 GSa/s、深度 100 M、单通道：1 ns/div → 率撞上限、一屏只存 10 点；10 ms/div →
+/// 正好占满 100 M；20 ms/div → 率掉到 500 MSa/s；30 ms/div → 1-2-5 向下取到
+/// 200 MSa/s、存 60 M（真机上"深度显示成 60M"就是这么来的）。
+///
+/// **控制律只有一份，在壳体里**：前端不许自己算一份，率和深度都从引擎的状态里读。
+/// 两份实现迟早对不上，那时屏幕上写的和环里的不是一个数——同 [`ColumnRef`] 的"写法
+/// 相等"、docs/scope-contract.md §8.5 的"观测混进几何"是同一族账。
+///
+/// 推导的输入**只许是声明**（时基、深度、通道数、`fs_max_hz`）加**已经稳定的观测**
+/// （源的率）。观测那一项要跟环一起记住：认领时重算得到同一个数才不清环——第一个
+/// 观众到场时把攒的清掉，正是 §8.5 修过的那个 bug。
+///
+/// 几何（改了要**重建**环）= `clock` + `channels` / `sources` + `depth` +
+/// `budget_bytes_per_s`；率或 i16 的量化标度变了要**清环**（数据丢掉、分配不动）；
+/// 其余就地生效。
 ///
 /// **寿命看它是谁的**（docs/scope-contract.md §8.5）：`scope_create` 临时开的那台是
 /// **会话的**，跟 WebSocket 连接走、断线即收；写在 `bind.scope` 里的这一份是**节点
@@ -958,10 +1111,10 @@ impl MeasureSetting {
 /// ```toml
 /// [widgets.bind.scope]
 /// channels = [{ column = "iu" }, { column = "iv" }, { column = "iw" }, { column = "z" }]
-/// depth_bytes = 1073741824
-/// budget_bytes_per_s = 400000000
+/// depth = { max_points = 100000000 }        # 100 Mpts，四通道分摊
+/// clock = { mode = "auto", fs_max_hz = 1e9 }
 /// refresh_hz = 30
-/// timebase = { span_s = 0.002, position = 0.5 }
+/// timebase = { span_s = 0.002, position = 0.5 }   # 一屏 2 ms = 200 µs/div
 /// roll_threshold_s = 0.5
 /// [widgets.bind.scope.trigger]
 /// kind = "edge"
@@ -985,8 +1138,8 @@ impl MeasureSetting {
 ///
 /// ```toml
 /// [widgets.bind.scope]
-/// clock = { mode = "fixed", fs_hz = 1000000 }   # 省 fs_hz = auto（取各源实测率最大值，壳体封顶）
-/// depth_bytes = 1073741824
+/// clock = { mode = "fixed", fs_hz = 1000000 }   # 钉死；按时基推导写 mode = "auto"
+/// depth = { max_points = 100000000, points = 60000000 }   # 选了 60 Mpts 那一档
 /// timebase = { span_s = 0.01, position = 0.5 }
 /// [[widgets.bind.scope.sources]]
 /// port = "loop"                                  # 名字缺省 = "loop"
@@ -1017,13 +1170,15 @@ pub struct ScopeConfig {
     /// `channels` 必须空。两个以上源要 `clock.mode = fixed`。
     #[serde(default)]
     pub sources: Vec<ScopeSource>,
-    /// 存储深度（字节）。上限归壳体（环境变量），这里只要 > 0。
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub depth_bytes: u64,
-    /// 写环字节预算（B/s）。`fs_allowed = budget / Σ 选中列字节`。`clock = native`
-    /// 下超了先向生产方请求降率（口声明了 `negotiable.rate_param`），不支持就入口
-    /// 峰值检测抽取——峰值存储每 scan 存一对，抽取比按存储字节算；`clock = fixed`
-    /// 下降的是**示波器时钟**，源率不动。
+    /// 存储深度，**按采样点**（见 [`ScopeDepth`]）。字节上限归壳体。
+    pub depth: ScopeDepth,
+    /// 写环字节预算（B/s），**只对 `clock = native` 有意义**：超了先向生产方请求
+    /// 降率（口声明了 `negotiable.rate_param`），不支持就入口峰值检测抽取——峰值
+    /// 存储每 scan 存一对，抽取比按存储字节算。
+    ///
+    /// `auto` / `fixed` 下率是推导出来的（`fs_max / 通道数` 已经把吞吐封住了，
+    /// `通道数 × fs × 位宽 ≡ fs_max × 位宽`），这一项不参与；机器扛不扛得住由壳体
+    /// 说了算。
     #[serde(default = "default_budget")]
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub budget_bytes_per_s: u64,
@@ -1108,20 +1263,24 @@ impl ScopeConfig {
     }
 
     /// 几何相同 = 环不用重建。
+    /// 几何相同 = 环不用重建。
+    ///
+    /// **时基不在里面，但它会改推导出来的率**（`auto` 下），而率变了环里就是两种率
+    /// 混着的数据——那要**清环**（数据丢掉、分配不动），不是重建。两件事别混：
+    /// 重建是重新分配（深度 / 通道 / 时钟模式变了），清环是丢数据（率、i16 的量化
+    /// 标度变了）。同一档内微调时基推不出新的率，就什么都不用做。
     pub fn same_geometry(&self, other: &ScopeConfig) -> bool {
         self.clock == other.clock
             && self.channels == other.channels
             && self.sources == other.sources
-            && self.depth_bytes == other.depth_bytes
+            && self.depth == other.depth
             && self.budget_bytes_per_s == other.budget_bytes_per_s
     }
 
     /// 声明层面的自洽性。列 id 存不存在、节点/口在不在图上、深度与
     /// `clock.fs_hz` 超不超壳体上限，要到壳体才知道。
     pub fn validate(&self) -> Result<(), String> {
-        if self.depth_bytes == 0 {
-            return Err("depth_bytes must be > 0".to_string());
-        }
+        self.depth.validate().map_err(|e| format!("depth: {e}"))?;
         if self.budget_bytes_per_s == 0 {
             return Err("budget_bytes_per_s must be > 0".to_string());
         }
@@ -1155,24 +1314,33 @@ impl ScopeConfig {
                 ));
             }
         }
-        if self.sources.len() > 1 && !self.clock.is_fixed() {
+        if self.sources.len() > 1 && !self.clock.is_resampled() {
             return Err(format!(
-                "{} 个源要 clock.mode = \"fixed\"：native 是跟着唯一的源走（原生 dtype + 整数抽取），\
-                 多源没有共同网格",
+                "{} 个源要重采样到示波器自己的时钟上（clock.mode = \"auto\" 或 \"fixed\"）：\
+                 native 是跟着唯一的源走（原生 dtype + 整数抽取），多源没有共同网格",
                 self.sources.len()
             ));
         }
         self.timebase.validate()?;
+        if self.clock.mode == ClockMode::Auto && self.timebase.span_scans.is_some() {
+            return Err(
+                "timebase: clock = auto 要按时间推导采样率（一屏 = 10 × 时基），所以跨度要写 span_s；\
+                 span_scans 是给没有率的口用的，那种口配 mode = \"native\""
+                    .to_string(),
+            );
+        }
         if let Some(t) = &self.trigger {
             t.validate().map_err(|e| format!("trigger: {e}"))?;
             let (slot, col) = self
                 .resolve(&t.source)
                 .map_err(|e| format!("trigger.source: {e}"))?;
             // native：源列在写环时读整行，外触发不必在选列里。
-            // fixed：环里只有选中的列，没进环就不在共同网格上，触发跑不了。
-            if self.clock.is_fixed() && !col.selected_in(self.channels_of(slot)) {
+            // auto / fixed：环里只有选中的列，没进环就不在共同网格上，触发跑不了。
+            if self.clock.is_resampled() && !col.selected_in(self.channels_of(slot)) {
                 return Err(format!(
-                    "trigger.source: {} 不在选列里——clock = fixed 下触发源必须进环",
+                    "trigger.source: {} 不在选列里——重采样的时钟（auto / fixed）下环里只有选中的列，\
+                     没进环的列不在共同网格上：把它选进 channels（不想看就 vertical.on = false），\
+                     或者用 clock = \"native\" 走外触发",
                     t.source
                 ));
             }
@@ -1361,7 +1529,7 @@ mod scope_config_tests {
 
     const SETUP: &str = r#"
 channels = [{ column = "iu" }, { column = "iv" }, { column = "iw" }, { column = "z" }]
-depth_bytes = 1073741824
+depth = { max_points = 100000000 }
 budget_bytes_per_s = 400000000
 refresh_hz = 30
 timebase = { span_s = 0.002, position = 0.5 }
@@ -1414,9 +1582,11 @@ gate = "screen"
 
     #[test]
     fn 缺省项可省_只写必填() {
+        // 没有率的口：跨度按拍数，时钟只能跟源
         let c: ScopeConfig = toml::from_str(
             r#"
-depth_bytes = 268435456
+depth = { max_points = 20000000, points = 10000000 }
+clock = { mode = "native" }
 timebase = { span_scans = 4000 }
 "#,
         )
@@ -1472,17 +1642,28 @@ timebase = { span_scans = 4000 }
         c.vertical[0].channel = "iq".parse().unwrap();
         assert!(c.validate().is_ok());
 
-        // 触发源不必在选中列里（外触发）
+        // 外触发（源列不在选中列里）只在 native 下成立：重采样的环里只有选中的列
         let mut c = setup();
         c.trigger.as_mut().unwrap().source = "iq_ref".parse().unwrap();
-        assert!(c.validate().is_ok());
+        let e = c.validate().unwrap_err();
+        assert!(e.contains("trigger.source") && e.contains("native"), "{e}");
+        c.clock.mode = ClockMode::Native;
+        c.timebase.span_s = None;
+        c.timebase.span_scans = Some(2000);
+        assert!(c.validate().is_ok(), "native 下外触发照旧");
     }
 
     #[test]
     fn 数值边界() {
         let mut c = setup();
-        c.depth_bytes = 0;
-        assert!(c.validate().unwrap_err().contains("depth_bytes"));
+        c.depth.max_points = 0;
+        assert!(c.validate().unwrap_err().contains("max_points"));
+        let mut c = setup();
+        c.depth.points = Some(c.depth.max_points + 1);
+        assert!(c.validate().unwrap_err().contains("max_points"));
+        let mut c = setup();
+        c.depth.points = Some(0);
+        assert!(c.validate().unwrap_err().contains("points"));
         let mut c = setup();
         c.budget_bytes_per_s = 0;
         assert!(c.validate().unwrap_err().contains("budget"));
@@ -1541,7 +1722,7 @@ timebase = { span_scans = 4000 }
         b.timebase.span_s = Some(1.0);
         assert!(a.same_geometry(&b));
         let mut c = a.clone();
-        c.depth_bytes *= 2;
+        c.depth.max_points *= 2;
         assert!(!a.same_geometry(&c));
         let mut d = a.clone();
         d.channels.pop();
@@ -1553,7 +1734,7 @@ timebase = { span_scans = 4000 }
 
     const MULTI: &str = r#"
 clock = { mode = "fixed", fs_hz = 1000000 }
-depth_bytes = 1073741824
+depth = { max_points = 100000000 }
 timebase = { span_s = 0.01 }
 [[sources]]
 port = "loop"
@@ -1645,41 +1826,132 @@ channels = [{ source = "loop", column = "iv" }]
     }
 
     #[test]
-    fn native_只能一个源_也不接受_fs_hz() {
+    fn 多源要重采样的时钟_native_只能一个源() {
+        // 缺省是 auto——也是重采样，多源在它下面成立
         let mut c = multi();
         c.clock = ScopeClock::default();
+        assert_eq!(c.clock.mode, ClockMode::Auto, "缺省是推导，不是跟源");
+        assert!(c.validate().is_ok(), "auto 也能多源");
+
+        c.clock.mode = ClockMode::Native;
         let e = c.validate().unwrap_err();
-        assert!(e.contains("2 个源") && e.contains("fixed"), "{e}");
+        assert!(e.contains("2 个源") && e.contains("native"), "{e}");
 
         c.sources.pop();
         c.trigger.as_mut().unwrap().source = "iu".parse().unwrap();
         c.measure.channels = vec!["iv".parse().unwrap()];
         c.vertical[0].channel = "iu".parse().unwrap();
         assert!(c.validate().is_ok(), "native + 一个显式源是合法的");
-
-        c.clock.fs_hz = Some(1e6);
-        assert!(c.validate().unwrap_err().contains("不接受 fs_hz"));
-
-        let mut c = multi();
-        c.clock.fs_hz = Some(0.0);
-        assert!(c.validate().unwrap_err().contains("fs_hz"));
-        c.clock.fs_hz = None; // auto
-        assert!(c.validate().is_ok());
     }
 
     #[test]
-    fn fixed_下触发源必须进环_native_下不必() {
-        // fixed：环里只有选中的列，外触发无处可跑
+    fn 三种时钟各自认什么() {
+        // fixed 必须给 fs_hz（原来"省略 = 取各源最快的率"作废）
+        let mut c = multi();
+        c.clock = ScopeClock {
+            mode: ClockMode::Fixed,
+            fs_hz: None,
+            ..Default::default()
+        };
+        assert!(c.validate().unwrap_err().contains("要给 fs_hz"));
+        c.clock.fs_hz = Some(0.0);
+        assert!(c.validate().unwrap_err().contains("fs_hz"));
+        c.clock.fs_hz = Some(1e6);
+        assert!(c.validate().is_ok());
+
+        // auto 不接受 fs_hz（率是推导出来的）；native 也不接受
+        for m in [ClockMode::Auto, ClockMode::Native] {
+            let mut c = multi();
+            c.sources.truncate(1);
+            c.trigger.as_mut().unwrap().source = "iu".parse().unwrap();
+            c.measure.channels = vec!["iv".parse().unwrap()];
+            c.vertical[0].channel = "iu".parse().unwrap();
+            c.clock = ScopeClock {
+                mode: m,
+                fs_hz: Some(1e6),
+                ..Default::default()
+            };
+            assert!(c.validate().unwrap_err().contains("不接受 fs_hz"), "{m:?}");
+        }
+
+        // fs_max_hz 只查有限且 > 0（真上限归壳体）
+        let mut c = multi();
+        c.clock.fs_max_hz = Some(-1.0);
+        assert!(c.validate().unwrap_err().contains("fs_max_hz"));
+        c.clock.fs_max_hz = Some(1e9);
+        assert!(c.validate().is_ok());
+
+        // 环里的 dtype：只许 f32 / i16，且 native 下没意义
+        use crate::semantic::Dtype;
+        let mut c = multi();
+        c.clock.dtype = Some(Dtype::I16);
+        assert!(c.validate().is_ok());
+        assert_eq!(c.clock.ring_dtype(), Some(Dtype::I16));
+        c.clock.dtype = Some(Dtype::I32);
+        assert!(c.validate().unwrap_err().contains("只许 f32 或 i16"));
+        let mut c = multi();
+        c.sources.truncate(1);
+        c.trigger.as_mut().unwrap().source = "iu".parse().unwrap();
+        c.measure.channels = vec!["iv".parse().unwrap()];
+        c.vertical[0].channel = "iu".parse().unwrap();
+        c.clock = ScopeClock {
+            mode: ClockMode::Native,
+            dtype: Some(Dtype::I16),
+            ..Default::default()
+        };
+        assert!(c
+            .validate()
+            .unwrap_err()
+            .contains("native 存源的原生 dtype"));
+        assert_eq!(
+            ScopeClock {
+                mode: ClockMode::Native,
+                ..Default::default()
+            }
+            .ring_dtype(),
+            None
+        );
+    }
+
+    #[test]
+    fn auto_下跨度要按时间_深度按点数分摊() {
+        let mut c = multi();
+        c.clock = ScopeClock::default();
+        c.timebase.span_s = None;
+        c.timebase.span_scans = Some(4000);
+        let e = c.validate().unwrap_err();
+        assert!(e.contains("span_s") && e.contains("native"), "{e}");
+
+        // 深度是所有通道合计，每通道按通道数分摊（控制律的第二个上限）
+        let d = ScopeDepth {
+            max_points: 100_000_000,
+            points: Some(60_000_000),
+        };
+        assert_eq!(d.points(), 60_000_000);
+        assert_eq!(d.per_channel(4), 15_000_000);
+        assert_eq!(d.per_channel(3), 20_000_000);
+        assert_eq!(d.per_channel(0), 0, "没有通道就没有每通道深度，不许除零");
+        let full = ScopeDepth {
+            max_points: 100_000_000,
+            points: None,
+        };
+        assert_eq!(full.points(), 100_000_000, "省略 = 用满");
+    }
+
+    #[test]
+    fn 重采样的时钟下触发源必须进环_native_下不必() {
+        // auto / fixed：环里只有选中的列，外触发无处可跑
         let mut c = multi();
         c.trigger.as_mut().unwrap().source = "loop:iw".parse().unwrap();
         let e = c.validate().unwrap_err();
         assert!(
-            e.contains("trigger.source") && e.contains("必须进环"),
+            e.contains("trigger.source") && e.contains("把它选进 channels"),
             "{e}"
         );
 
         // native：源列在写环时读整行，外触发照旧
         let mut c = setup();
+        c.clock.mode = ClockMode::Native;
         c.trigger.as_mut().unwrap().source = "iq_ref".parse().unwrap();
         assert!(c.validate().is_ok());
     }
