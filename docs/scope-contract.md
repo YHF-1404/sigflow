@@ -174,7 +174,7 @@ i16 走 `fs2_hz`），一个节点上就凑得出两个不同率的源进同一�
 ### 9.1 控制律（壳体实现，类型层只定输入）
 
 ```text
-窗口时间   = 10 × 时基                        （一屏十格 = timebase.span_s）
+窗口时间   = timebase.span_s                  （**一屏**；屏上十格，s/div = span_s / 10）
 每通道深度 = floor(depth.points / 通道数)
 fs         = 1-2-5 向下取档( min( clock.fs_max_hz / 通道数,
                                   每通道深度 / 窗口时间,
@@ -234,8 +234,14 @@ fs         = 1-2-5 向下取档( min( clock.fs_max_hz / 通道数,
 
 `depth_bytes` 没了，所有 setup 文件都要改成 `depth = { max_points = … }`；缺省时钟从
 `native` 变成 `auto`，所以**原来不写 `clock` 的 setup 行为变了**（尤其配 `span_scans`
-的会直接被拒）。dex 的 `foc-sil.sh` 里两台示波器要跟着改（已通知）。这是一期内的破坏
-性改动，趁没合没装先改干净。
+的会直接被拒）。这是一期内的破坏性改动，趁没合没装先改干净。
+
+dex 的 `foc-sil.sh` 两台已经改完（dex `feat/foc-sil` 953f875）：`osc_loop` 加
+`depth = { max_points = 50000000 }`、时钟留缺省 `auto`；**`osc_enc` 钉 `native` +
+`span_scans` 不动**——`rotor` 口**没有 `declared_rate_hz`**（200 Hz 是运行期参数
+`rotor_hz`），正落在"没有率的口用 native + span_scans"这条上，顺带把外触发（`z` 不进
+选列）也保住了。我原先建议它改 `span_s` 是**记错了 rotor 声明过率**，dex 核了 manifest
+纠正的——挑口的时钟前先看 manifest 有没有 `declared_rate_hz`，别照记忆。
 
 ## 7. 归属
 

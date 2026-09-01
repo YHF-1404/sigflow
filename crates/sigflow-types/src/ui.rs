@@ -1078,7 +1078,7 @@ impl MeasureSetting {
 /// **采样率与存储点数是推导出来的，不是设死的**（`clock.mode = auto`，缺省）：
 ///
 /// ```text
-/// 窗口时间   = 10 × 时基                       （一屏十格，即 timebase.span_s）
+/// 窗口时间   = timebase.span_s                 （**一屏**；屏上十格，s/div = span_s / 10）
 /// 每通道深度 = floor(depth.points / 通道数)
 /// fs         = 1-2-5 向下取档( min( clock.fs_max_hz / 通道数,
 ///                                   每通道深度 / 窗口时间,
