@@ -365,6 +365,24 @@ pub enum ColumnRef {
 }
 
 impl ColumnRef {
+    /// **有没有可能指着同一路**——不是"写法相等"（那是 `PartialEq`）。
+    ///
+    /// 单组口上 `{ column = "v" }`（每组）与 `{ column = "v", group = 0 }`（第 0
+    /// 组）指着同一路却判不等,所以凡是要回答"这两个引用是不是同一路"的地方都不能
+    /// 用 `==`。这里保守：**重合就算可能相同**（不带组序的覆盖该列所有组）。下标
+    /// 与列名之间这一层分不开（要列契约才知道 `@0` 是不是 `v`),交给壳体。
+    pub fn may_be_same(&self, other: &ColumnRef) -> bool {
+        match (self, other) {
+            (ColumnRef::Channel { channel: a }, ColumnRef::Channel { channel: b }) => a == b,
+            (
+                ColumnRef::Column { column: ca, group: ga },
+                ColumnRef::Column { column: cb, group: gb },
+            ) => ca == cb && (ga.is_none() || gb.is_none() || ga == gb),
+            // 一个按下标、一个按列名：这一层看不出来,不拒（壳体落到通道后再判）
+            _ => false,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         match self {
             ColumnRef::Column { column, .. } if column.trim().is_empty() => {
@@ -1114,6 +1132,48 @@ pub enum Gate {
     Cursors,
 }
 
+/// 屏幕画法：Y-T（横轴时间，缺省）还是 X-Y（一路当横轴、一路当纵轴）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub enum DisplayMode {
+    /// 横轴是时间——普通示波器。
+    #[default]
+    Yt,
+    /// 横轴是一路信号：李萨如、矢量画、示波器音乐走这条。
+    Xy,
+}
+
+/// 画法设置。**它只改画，不改采集**——同一帧数据，换个画法而已，所以它
+/// **不进 [`ScopeConfig::same_geometry`]**：在 Y-T 和 X-Y 之间切不该重建环、
+/// 不该把攒下的历史清掉（拿这条当判据的那一族账见 docs/scope-contract.md §11）。
+///
+/// X-Y 靠"同一拍"成立：一帧里每一路按拍对齐，第 i 个 x 与第 i 个 y 是同一拍。
+/// **但这只在视图发原始样本时为真**——视图每像素列不足两拍才发原始样本
+/// （`span < 2 × px`，且 ≤ 65536 拍），再长就退化成每列的 (min, max)，那时
+/// `x[i]` 与 `y[i]` 是**一段窗口里的极值**而不是同一拍，连出来的不是轨迹。
+/// 所以 X-Y 要把一屏收短（48 kHz 的音频、px = 1024 时，一屏 20–40 ms）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(TS))]
+pub struct DisplaySetting {
+    #[serde(default)]
+    pub mode: DisplayMode,
+    /// 横轴那一路，`mode = "xy"` 时必填。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub x: Option<ChanRef>,
+    /// 纵轴那一路，`mode = "xy"` 时必填。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub y: Option<ChanRef>,
+}
+
+impl DisplaySetting {
+    pub fn is_xy(&self) -> bool {
+        self.mode == DisplayMode::Xy
+    }
+}
+
 /// 一对时间光标：相对时间零点（触发窗以触发拍为 0、自由跑 / roll 以右缘为 0）
 /// 的**存储拍**数，可为负（`clock = fixed` 下存储拍就是示波器时钟的拍）。它是 setup 的一部分（真机的光标随 setup 存），UI
 /// 拖光标即时 `scope_set`、手势结束回写绑定。
@@ -1310,6 +1370,10 @@ pub struct ScopeConfig {
     /// 报错），列契约里没有的列由壳体当场报。
     #[serde(default)]
     pub measure: MeasureSetting,
+    /// 画法（Y-T / X-Y）。只改画不改采集，**不进 `same_geometry`**。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub display: Option<DisplaySetting>,
 }
 
 fn default_budget() -> u64 {
@@ -1480,6 +1544,34 @@ impl ScopeConfig {
                 .map_err(|e| format!("measure.channels[{i}]: {e}"))?;
             self.resolve(c)
                 .map_err(|e| format!("measure.channels[{i}]: {e}"))?;
+        }
+        if let Some(d) = &self.display {
+            if d.is_xy() {
+                let (x, y) = match (&d.x, &d.y) {
+                    (Some(x), Some(y)) => (x, y),
+                    _ => {
+                        return Err(
+                            "display: mode = \"xy\" 要给 x 和 y（横轴、纵轴各一路）".to_string()
+                        )
+                    }
+                };
+                let (sx, cx) = self
+                    .resolve(x)
+                    .map_err(|e| format!("display.x: {e}"))?;
+                let (sy, cy) = self
+                    .resolve(y)
+                    .map_err(|e| format!("display.y: {e}"))?;
+                // **不能拿写法相等来判"是不是同一路"**（ColumnRef 的 PartialEq 是写法
+                // 相等）：单组口上 `{column="l"}` 与 `{column="l", group=0}` 指着同一
+                // 路却判不等。这里判的是"**有没有可能是同一路**"——重合就拒，宁可保守。
+                // 落到具体通道之后的最终判定归壳体（它才有列契约，见 §12.3）。
+                if sx == sy && cx.may_be_same(cy) {
+                    return Err(format!(
+                        "display: x 与 y 是同一路（{x} / {y}）——X-Y 的两轴要两路不同的信号，\
+                         同一路连出来只会是一条对角线"
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -1729,6 +1821,69 @@ timebase = { span_scans = 4000 }
         c.timebase.span_s = Some(1.0);
         c.timebase.position = 1.5;
         assert!(c.validate().unwrap_err().contains("position"));
+    }
+
+    #[test]
+    fn xy_画法_两轴必填且不能是同一路_但它不进几何() {
+        // 画法只改画不改采集：切 Y-T / X-Y 不该重建环（那会把攒的历史清掉）
+        let a = setup();
+        let mut b = setup();
+        b.display = Some(DisplaySetting {
+            mode: DisplayMode::Xy,
+            x: Some("iu".parse().unwrap()),
+            y: Some("iv".parse().unwrap()),
+        });
+        assert!(b.validate().is_ok(), "{:?}", b.validate());
+        assert!(a.same_geometry(&b), "display 不该进 same_geometry");
+
+        // xy 要两轴都给
+        let mut c = setup();
+        c.display = Some(DisplaySetting {
+            mode: DisplayMode::Xy,
+            x: Some("iu".parse().unwrap()),
+            y: None,
+        });
+        assert!(c.validate().unwrap_err().contains("x 和 y"));
+
+        // 同一路：写法一样的
+        let mut c = setup();
+        c.display = Some(DisplaySetting {
+            mode: DisplayMode::Xy,
+            x: Some("iu".parse().unwrap()),
+            y: Some("iu".parse().unwrap()),
+        });
+        assert!(c.validate().unwrap_err().contains("同一路"));
+
+        // 同一路：写法**不一样**但指着同一路（不带组序 vs 带组序）——拿 == 判会漏掉
+        let mut c = setup();
+        c.display = Some(DisplaySetting {
+            mode: DisplayMode::Xy,
+            x: Some("iu".parse().unwrap()),
+            y: Some("0/iu".parse().unwrap()),
+        });
+        assert_ne!(
+            c.display.as_ref().unwrap().x,
+            c.display.as_ref().unwrap().y,
+            "这两个引用写法不等——正是 == 判不出来的那种"
+        );
+        assert!(
+            c.validate().unwrap_err().contains("同一路"),
+            "写法不等但指着同一路,也要拒"
+        );
+
+        // 不同组是两路,别误伤
+        let mut c = setup();
+        c.display = Some(DisplaySetting {
+            mode: DisplayMode::Xy,
+            x: Some("0/iu".parse().unwrap()),
+            y: Some("1/iu".parse().unwrap()),
+        });
+        assert!(c.validate().is_ok(), "{:?}", c.validate());
+
+        // yt（缺省）不要求 x/y
+        let mut c = setup();
+        c.display = Some(DisplaySetting::default());
+        assert!(c.validate().is_ok());
     }
 
     #[test]

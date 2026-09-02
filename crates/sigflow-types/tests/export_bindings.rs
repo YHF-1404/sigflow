@@ -48,8 +48,9 @@ use sigflow_types::semantic::{
     BackpressurePolicy, BatchSpec, Dtype, PayloadSchemaId, SemanticType,
 };
 use sigflow_types::ui::{
-    AcqMode, AcqSetting, BindKind, ChanRef, ClockMode, ColumnRef, Coupling, CursorPair, Gate,
-    Interp, Layout, MeasureSetting, ScopeClock, ScopeConfig, ScopeDepth, ScopeSource, ScopeTrigger,
+    AcqMode, AcqSetting, BindKind, ChanRef, ClockMode, ColumnRef, Coupling, CursorPair,
+    DisplayMode, DisplaySetting, Gate, Interp, Layout, MeasureSetting, ScopeClock, ScopeConfig,
+    ScopeDepth, ScopeSource, ScopeTrigger,
     TapConfig, TapMode, Timebase, TrigKind, TrigMode, TrigSlope, UiWidget, VerticalSetting,
     WidgetBinding,
 };
@@ -91,6 +92,7 @@ fn export_bindings() {
         ColumnRef, ChanRef, ScopeClock, ClockMode, ScopeDepth, ScopeSource,
         ScopeConfig, ScopeTrigger, TrigKind, TrigSlope, TrigMode, Timebase,
         AcqMode, AcqSetting, Coupling, Interp, VerticalSetting, MeasureSetting, Gate, CursorPair,
+        DisplayMode, DisplaySetting,
         // rpc envelope + method payloads
         RpcMessage, RpcRequest, RpcResponse, RpcError, RpcNotification,
         SetParamRequest, GetParamRequest, GetParamResponse, InvokeActionRequest,
