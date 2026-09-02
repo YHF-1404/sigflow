@@ -867,15 +867,39 @@ hml 要的例子放 `example/`：播 **Primer**（BUS ERROR Collective：DJ_Leve
 Marv1994；2025-04-20 发布，Revision 2025 Wild **第一名 + Crowd Favorite**，
 Meteoriks 2026 New Talent）。它是**示波器音乐**——两路音频驱动 X-Y，屏上是画。
 
-**不把作品文件提交进仓**（core 提的，对）：那是别人的作品，例子里只放"怎么拿"和怎么
-接线，README 指向官方发布页（Demozoo `productions/371249`、pouët `prod.php?which=103998`、
-scene.org 的官方下载）。**官方发布的是 FLAC，不是 WAV**，所以例子要么带一句
-`ffmpeg -i primer.flac primer.wav`，要么源插件自己解 FLAC——WAV 解析零依赖，FLAC 不是，
-先走 WAV + 一句转换。
+**作品文件不进仓**（core 提的边界，hml 试过放进去又撤回，最后定的还是不进）：那是
+别人的作品，而**本仓是公开的 MIT 仓**——一个作品文件躺在里面，默认读法就是"它也是
+MIT"，而我们没有资格替作者做这个声明。附带一笔实账：那份 192 kHz 的 Primer 有
+261 MB，进 Git LFS 之后要撤回得改写历史，GitHub 免费额度也只有 1 GB 存储 / 1 GB 月
+带宽。
 
-接线：源插件把 stereo 文件播成 2 列的口（`l` / `r`），`declared_rate_hz` = 文件采样率；
-时钟 `native`（原样进环，X-Y 画的才是真轨迹）；两路都在 `channels` 里、`vertical.on = true`，
-**两路 V/div 取同一个值**（两轴同档才是圆不是椭圆）；一屏 20–40 ms（见 §13.2）。
+落地是 `example/oscilloscope-music-res/`：目录进仓，里面
+`.gitignore` 挡掉 `*.wav`/`*.flac`/… ，`README.md` 写清**怎么拿**（Demozoo
+`productions/371249`、pouët `prod.php?which=103998`、scene.org）、**版权归谁**、以及
+选素材时的采样率注意事项。脚本默认找 `primer-final.wav`，找不到就报错并指向那份
+README，也仍然接受 `WAV=<别的文件>`。
+
+源插件只吃 WAV（解析零依赖；FLAC 不是），换别的素材先 `ffmpeg -i 输入 输出.wav`。
+
+接线：源插件把 stereo 文件播成 2 列的口（`l` / `r`），**不声明** `declared_rate_hz`
+（文件的率是运行期的，每帧带 `sfrate01`）；时钟 `native`（原样进环，X-Y 画的才是真
+轨迹）；两路都在 `channels` 里、`vertical.on = true`，**两路 V/div 取同一个值**（两轴
+同档才是圆不是椭圆）；一屏用 **`span_scans`**（见 §13.2，跟率无关才是唯一不会随文件
+炸的写法）。
+
+**192 kHz 的素材把一条隐含冲突顶出来了**（官方那份 Primer 就是 192 kHz）：余辉累的是
+**推出去的帧**，要盖满得让一屏 ≈ 刷新周期；而 X-Y 要求一屏 < `2 × px` 拍。两者同时
+成立的条件是 **`fs < 2 · px · refresh`（px=1024、30 Hz 时约 61 kHz）**：
+
+| 素材 | 满覆盖需要 | X-Y 上限 | 覆盖率上限 |
+|---|---|---|---|
+| 48 kHz | 1600 拍 | 2047 拍 | **100%** |
+| 96 kHz | 3200 拍 | 2047 拍 | 64% |
+| 192 kHz | 6400 拍 | 2047 拍 | **32%**（`span_scans = 1024` 时是 16%） |
+
+所以高采样率的素材上拖影本来就淡，**而且不能靠调大一屏去救**——越过配对线之后 X-Y
+直接不画，拿不到轨迹比拿到一条淡的轨迹坏得多。UI 上那个「覆盖调到最大」在 X-Y 下
+必须**同时受配对线约束**，否则按一下就把图按没了。
 
 ### 13.6 旧壳体会**静默吃掉**它不认识的字段（我实测，比 core 说的更宽）
 

@@ -2,40 +2,45 @@
 # example/oscilloscope-music.sh —— 示波器音乐：两路音频驱动 X-Y，屏上是画不是波形。
 # requires-native: wav-source
 #
-# 一个节点、一个口、一台整页示波器。放什么由你给：
+# 一个节点、一个口、一台整页示波器。默认放的是这个：
 #
 #   Primer —— BUS ERROR Collective（DJ_Level_3 与 Marv1994）
 #   Revision 2025 Wild 第一名 + Crowd Favorite（2025-04-20，Saarbrücken）
 #   另获 Meteoriks 2026 New Talent
 #     Demozoo  https://demozoo.org/productions/371249/
 #     pouët    https://www.pouet.net/prod.php?which=103998
-#     官方发布在 scene.org（FLAC）
+#     官方发布在 scene.org
 #
-# **作品文件不在这个仓里**，也不该在——那是别人的作品。自己去上面的发布页下载。
-# 官方发的是 FLAC，这个源只吃 WAV，转一下：
+# **作品文件不在这个仓里**，也不该在——那是别人的作品，而本仓是公开的 MIT 仓。
+# 自己去上面的发布页下载，转成 WAV 放到脚本默认找的位置：
 #
-#   ffmpeg -i primer.flac primer.wav
+#   ffmpeg -i primer.flac example/oscilloscope-music-res/primer-final.wav
 #
-# 然后：  WAV=~/primer.wav sh example/oscilloscope-music.sh
-#
+# 那个目录的 .gitignore 挡着音频文件，怎么拿见它的 README.md。
+# 要换别的：WAV=<你的.wav> sh example/oscilloscope-music.sh
 # 换任何一段 stereo 录音都行，只是别人未必是画。
 #
 # 前提：sigflow-cli 在 PATH，wav-source 已 `sigflow-cli plugin install`。
 # POSIX sh；参数走环境变量：
-#   WAV       WAV 文件路径（必给）
+#   WAV       WAV 文件路径    （默认 example/oscilloscope-music-res/primer-final.wav）
 #   NODE_DIR  节点目录        （默认 /tmp/sigflow-osc-music）
 #   SPAN      一屏多少拍      （默认 1024，别往大调，理由见下）
 set -eu
 
-WAV="${WAV:-}"
+# 默认找 res 目录里那份（**不在仓里**，自己放）；脚本可能从任何 cwd 跑，按自身位置定位。
+_here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+WAV="${WAV:-$_here/oscilloscope-music-res/primer-final.wav}"
 NODE_DIR="${NODE_DIR:-/tmp/sigflow-osc-music}"
 SPAN="${SPAN:-1024}"
 export SIGFLOW_ROOT_PORT="${SIGFLOW_ROOT_PORT:-9500}"
 
 step() { printf '\n\033[1;36m=== %s\033[0m\n' "$*"; }
 
-[ -n "$WAV" ] || { printf '\033[1;31m要给 WAV=<stereo wav 的路径>\033[0m\n（官方发的是 FLAC：ffmpeg -i primer.flac primer.wav）\n' >&2; exit 1; }
-[ -f "$WAV" ] || { printf '\033[1;31m没有这个文件：%s\033[0m\n' "$WAV" >&2; exit 1; }
+[ -n "$WAV" ] || { printf '\033[1;31m要给 WAV=<stereo wav 的路径>\033[0m\n' >&2; exit 1; }
+[ -f "$WAV" ] || { printf '\033[1;31m没有这个文件：%s\033[0m\n' "$WAV" >&2
+    printf '素材不进仓（那是别人的作品）——怎么拿见 %s/README.md，\n' \
+        "$_here/oscilloscope-music-res" >&2
+    printf '或者自己给一份：WAV=<你的 stereo wav> sh %s\n' "$0" >&2; exit 1; }
 case "$WAV" in /*) ;; *) WAV="$(pwd)/$WAV" ;; esac   # 节点在别的 cwd 里跑
 
 step "重建 $NODE_DIR"
@@ -57,6 +62,21 @@ sigflow-cli --node music param set path "$WAV"
 # 写 span_scans = 1024 是**跟文件采样率无关**的：任何文件都是 1024 拍，永远在线
 # 下面。写成时间就不是了——20 ms 在 48 kHz 上是 960 拍（安全），在 96 kHz 上是
 # 1920 拍、在 192 kHz 上直接越线。**这条是"别把一个具体采样率下的数当通则"。**
+#
+# **官方那份 Primer 正好是 192 kHz**，所以它就是那个反例本身：
+#   span_scans = 1024  →  5.33 ms，X-Y 成立
+#   span_s     = 21 ms →  4096 拍，2 倍越线，X-Y 当场不画
+# 同一份 setup 拿 48 kHz 的素材试，两种写法都过——**只有换了率才分得出对错**。
+#
+# 一个跟着来的限制，看余辉时会撞上：**采样率高过 ~61 kHz 之后，"X-Y 要配得上对"
+# 和"余辉要盖满"就冲突了**。余辉累的是推出去的帧，要盖满得让一屏 ≈ 刷新周期
+# （30 Hz → 33 ms）；而 X-Y 要求一屏 < 2 × px 拍。两者同时成立的条件是
+# fs < 2 · px · refresh ≈ 61 kHz。所以：
+#   48 kHz  满覆盖需 1600 拍 < 2047 → 覆盖能到 100%
+#   192 kHz 满覆盖需 6400 拍 > 2047 → **覆盖率上限 32%**，这份 Primer 在
+#           span_scans = 1024 上是 16%
+# 拖影因此比 48 kHz 的素材淡。**别为了盖满去调大一屏**——越过配对线之后 X-Y 直接
+# 不画，拿不到轨迹比拿到一条淡的轨迹坏得多。
 #
 # 两轴 v_div 取同一个值：X-Y 画在正方形里、两轴都是 8 格，同档才是圆不是椭圆。
 mkdir -p "$NODE_DIR/scope"
@@ -106,8 +126,11 @@ cat <<'TXT'
     1. 有入口、点进去没波形，状态行写「在等口出第一帧」→ **还没开播**。这个口不
        声明采样率（文件的率是运行期才知道的），率是第一帧带上来的，所以开播之前
        它确实不知道自己该多快。这不是坏了。
-    2. 画太小 → 拧 gain，或者把两轴的 v_div 一起调小。
-       **两轴要一起**，只调一个会把圆压成椭圆。
+    2. 图缩成一个点 → **先看是不是刚开播**。Primer 开头几秒近乎静音（实测峰值
+       0.004，而全曲中位 0.37、最高 0.86），图就该是个点；等几秒它自己长开。
+       真的一直小才去拧 gain，或者把两轴的 v_div 一起调小——**两轴要一起**，
+       只调一个会把圆压成椭圆。
+       （默认 v_div = 0.25 是按这份素材配的：峰值 0.86 时正好撑满不溢出。）
     3. 一团糊、不像画 → 一屏太长了。X-Y 只在一屏拿得到原始样本时才是轨迹；
        把 SPAN 调回 1024。
 
