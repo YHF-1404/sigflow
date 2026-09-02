@@ -985,6 +985,14 @@ impl Timebase {
 
 /// 采集模式：normal 每条记录一窗；average 同一触发相位的 N 窗平均（要触发）；
 /// persist 每条记录都进余辉密度图、刷新时只把最新一条当矢量线。
+///
+/// **"记录"有两个来源，persist 说的是两个都算**（§9.5 之后就是这样）：触发扫描器
+/// 出的那些，和**自由跑按屏长切出来的**那些。后者是 §9.5 为了"常驻示波器攒了一小时
+/// 却一个入口都没有"补的，`roll` 档也照切。
+///
+/// 写清楚是因为实现只兑现了前一半（见 docs/scope-contract.md §9.7）：自由跑的分段
+/// 落在引擎里一个**独立的分支**里，接上了分段翻页、没接上密度累加。所以自由跑 +
+/// persist 今天没有余辉——**那是实现漏了这一半，不是这一档本来就没有**。
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(TS))]
