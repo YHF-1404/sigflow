@@ -8,7 +8,7 @@ sigflow-core 那边的任务书：壳体、RPC、CLI、前端都在那个仓。
 
 **2026-08-30 转向**：hml 试用后决定重做——示波器成为生产口所在壳体里的独立采集引擎（深度 8 GB、100 MS/s），tap 退回纯订阅。本文里"触发住在 tap 里"的部分（§3.3 状态机、§3.4 run/stop 的触发含义、§5 前端的触发/测量/光标/刻度、§6 触发验收）作废；tap 身份、选列、线协议 v3、按连接过滤、bind 时解析列 id 保留。新契约见 `docs/scope-contract.md`，引擎设计见 sigflow-core `docs/scope.md`。
 
-**2026-08-29 落地**：sigflow-core `feat/tap-scope` 57ab08a 按本文实现并逐轮核过（壳体状态机 / 选列 / run-stop / 线协议 v3 / RPC 含 §3.7 / CLI / 前端 / 真口验收）；核对中改过的地方都已回写进本文。两仓分支均未合 main、未推，合并与系统包归 hml。
+**2026-08-29 落地**：sigflow-core `feat/tap-scope` b9625d6 按本文实现并逐轮核过（壳体状态机 / 选列 / run-stop / 线协议 v3 / RPC 含 §3.7 / CLI / 前端 / 真口验收）；核对中改过的地方都已回写进本文。两仓分支均未合 main、未推，合并与系统包归 hml。
 
 ## 0. 一句话
 
@@ -346,8 +346,8 @@ shell.rs：列 id 解析（含 group 展开、多组口触发源缺 group 拒、
 
 ## 7. 分支、顺序、注意事项
 
-- sigflow-core 现在的工作树在 `fix/tap-header-disc`；`feat/motor-disc`（8ee1a25）
-  和 `fix/tap-header-disc`（eb0c555、4e42e9f）都未合 main、未推。新活从
+- sigflow-core 现在的工作树在 `fix/tap-header-disc`；`feat/motor-disc`（4a849ef）
+  和 `fix/tap-header-disc`（1e8525e、448287f）都未合 main、未推。新活从
   `fix/tap-header-disc` 开 `feat/tap-scope`，先把 `feat/motor-disc` 合进来（两支文
   件不重叠；`FeedMeta.disc`、`declared_rate_hz` 传播、MotorDisc 的 stream tap 都
   要在）。主干合并顺序归 hml。
