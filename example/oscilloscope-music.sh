@@ -87,17 +87,26 @@ sigflow-cli --node music widget add sigflow.ui.oscilloscope@0.1.0 xy \
     --layout "8,8,384,40" --config "label=示波器音乐（X-Y）"
 sigflow-cli --node music widget bind xy port:audio --scope-file "$NODE_DIR/scope/xy.toml"
 
+# **节点在画布上的显示密度**——不设这一行，浏览器里只有一张 node 卡片，整页控件的
+# 入口根本不出现，看起来像"控件没装上"。整页控件必须配 `--display face`。
+# （`--pos` 是必填的；`--size` 是脸的尺寸，给大一点，X-Y 画在正方形里。）
+sigflow-cli layout music --pos 20,20 --size 1260,840 --display face
+
 step "开播"
 sigflow-cli --node music processing start
 
 printf '\n  打开 webui：\033[1mhttp://127.0.0.1:%s/\033[0m —— 进 music 节点，点开「示波器音乐」那一页。\n' "$SIGFLOW_ROOT_PORT"
 cat <<'TXT'
 
-  看不到东西时按顺序查这三条：
-    1. **还没开播 → 示波器停在「在等口出第一帧」。** 这个口不声明采样率（文件的率
-       是运行期才知道的），率是第一帧带上来的，所以没开播之前它确实不知道自己该
-       多快。这不是坏了。
-    2. 画太小 → 拧 gain（param set gain 2），或者把两轴的 v_div 一起调小。
+  看不到东西时，先分清是**看不见页面**还是**看不见波形**——两件事，别混着查：
+
+    0. 浏览器里只有一张 node 卡片、压根没有页面入口 → 节点的显示密度没设成 face。
+       脚本里那行 `sigflow-cli layout music … --display face` 就是干这个的；
+       手搭图时最容易漏，而漏了之后看起来像"控件没装上"，会往完全错的方向查。
+    1. 有入口、点进去没波形，状态行写「在等口出第一帧」→ **还没开播**。这个口不
+       声明采样率（文件的率是运行期才知道的），率是第一帧带上来的，所以开播之前
+       它确实不知道自己该多快。这不是坏了。
+    2. 画太小 → 拧 gain，或者把两轴的 v_div 一起调小。
        **两轴要一起**，只调一个会把圆压成椭圆。
     3. 一团糊、不像画 → 一屏太长了。X-Y 只在一屏拿得到原始样本时才是轨迹；
        把 SPAN 调回 1024。
