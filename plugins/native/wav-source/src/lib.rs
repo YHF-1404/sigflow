@@ -292,7 +292,15 @@ impl Plugin for WavSource {
                     self.reload = true;
                 }
             }
-            ("loop_play", ParamValue::Bool(b)) => self.loop_play = *b,
+            ("loop_play", ParamValue::Bool(b)) => {
+                self.loop_play = *b;
+                // 把循环打开 = "接着放"。`finished` 是个闩：不循环放到尾就锁住,
+                // 而在此之前只有 restart 能解锁——于是"我把循环打开了却还是没动静",
+                // 人只会以为坏了。开循环就该解锁,这是这个旋钮的字面意思。
+                if *b {
+                    self.finished = false;
+                }
+            }
             ("gain", ParamValue::F64(v)) => self.gain = *v,
             ("speed", ParamValue::F64(v)) => {
                 if *v > 0.0 && (*v - self.speed).abs() > f64::EPSILON {
@@ -388,7 +396,16 @@ impl Plugin for WavSource {
         }
         self.seq += 1;
         self.index += scans as u64;
-        self.cursor = (self.cursor + scans as u64) % frames_total.max(1);
+        // **回绕只在循环播放时做**。以前这里无条件取模：不循环时读头走到文件尾
+        // 会被模回 0，于是"还剩几拍"又变回一整个文件，`loop_play = false` 和
+        // `true` 表现一模一样。单测只考了循环那一支——正是"判据按穷举写，别按
+        // 我见过的那一种写"，真图上一放才露。
+        let next = self.cursor + scans as u64;
+        self.cursor = if self.loop_play {
+            next % frames_total.max(1)
+        } else {
+            next.min(frames_total)
+        };
         ProcessOutcome::Ok
     }
 
@@ -506,6 +523,86 @@ mod tests {
         assert!((val(0) - 3000.0 / 32768.0).abs() < 1e-6);
         assert_eq!(val(2), 0.0);
         assert!((val(4) - 1000.0 / 32768.0).abs() < 1e-6);
+    }
+
+    /// 把 `process()` 催起来跑：把锚点推到过去，`target` 就远大于已发的拍数，
+    /// 每次调用都会把能发的都发掉。返回 (总共发了多少拍, 调了几次才不出数)。
+    fn drain(p: &mut WavSource, calls: usize) -> (u64, Option<usize>) {
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut total = 0u64;
+        let mut stopped = None;
+        for k in 0..calls {
+            // 每轮把锚点再往前推 1 秒：模拟"又过了一秒"
+            p.anchor_t0_ns -= 1_000_000_000;
+            let mut outs = [FrameOut::new(&mut buf)];
+            p.process(&[], &mut outs);
+            let n = outs[0].header.n_samples as u64;
+            total += n;
+            if n == 0 && stopped.is_none() {
+                stopped = Some(k);
+            }
+        }
+        (total, stopped)
+    }
+
+    fn loaded(frames: usize, fs: u32, loop_play: bool) -> WavSource {
+        let mut body = Vec::new();
+        for i in 0..frames {
+            body.extend_from_slice(&((i % 1000) as i16).to_le_bytes());
+            body.extend_from_slice(&(-((i % 1000) as i16)).to_le_bytes());
+        }
+        let mut p = WavSource::new(&manifest());
+        p.wav = Some(Wav::parse(&wav(1, 16, 2, fs, &body)).unwrap());
+        p.loop_play = loop_play;
+        p.fs_out = fs as f64;
+        p.rate_annotation = encode_rate_annotation(fs as f64);
+        p.anchor_t0_ns = mono_ns();
+        p
+    }
+
+    #[test]
+    fn 不循环就要真的停在文件尾_循环才接着放() {
+        // 这条是真图上放出来的：以前读头无条件取模，走到尾被模回 0，
+        // "还剩几拍"又变回一整个文件，于是 loop_play = false 根本停不下来。
+        let frames = 5000usize;
+        let mut p = loaded(frames, 8000, false);
+        let (total, stopped) = drain(&mut p, 8);
+        assert_eq!(total, frames as u64, "不循环时该恰好出一个文件的拍数");
+        assert!(stopped.is_some(), "不循环时该停下来");
+        assert!(p.finished, "该置 finished");
+
+        // 对照：循环时一直出，而且远超一个文件
+        let mut p = loaded(frames, 8000, true);
+        let (total, stopped) = drain(&mut p, 8);
+        assert!(total > 3 * frames as u64, "循环时该一直出：{total}");
+        assert!(stopped.is_none(), "循环时不该停");
+    }
+
+    #[test]
+    fn 放完之后把循环打开_就该接着放() {
+        // 以前 `finished` 只有 restart 能解：把 loop_play 拧回 true 屏幕上依旧
+        // 一动不动,而旋钮的字面意思就是"接着放"。
+        let frames = 2000usize;
+        let mut p = loaded(frames, 8000, false);
+        let (a, _) = drain(&mut p, 5);
+        assert_eq!(a, frames as u64);
+        assert!(p.finished);
+        p.set_param("loop_play", &ParamValue::Bool(true));
+        assert!(!p.finished, "打开循环该解掉那个闩");
+        let (b, stopped) = drain(&mut p, 5);
+        assert!(b > frames as u64, "打开循环之后该接着放：{b}");
+        assert!(stopped.is_none());
+    }
+
+    #[test]
+    fn 不循环放完之后_restart_能重新放() {
+        let frames = 3000usize;
+        let mut p = loaded(frames, 8000, false);
+        let (a, _) = drain(&mut p, 5);
+        assert_eq!(a, frames as u64);
+        p.invoke_action("restart");
+        let (b, _) = drain(&mut p, 5);
+        assert_eq!(b, frames as u64, "restart 之后该能再放一整遍");
     }
 
     #[test]

@@ -90,9 +90,8 @@ sigflow-cli --node music widget bind xy port:audio --scope-file "$NODE_DIR/scope
 step "开播"
 sigflow-cli --node music processing start
 
+printf '\n  打开 webui：\033[1mhttp://127.0.0.1:%s/\033[0m —— 进 music 节点，点开「示波器音乐」那一页。\n' "$SIGFLOW_ROOT_PORT"
 cat <<'TXT'
-
-  打开 webui（默认 http://127.0.0.1:9500/），进 music 节点，点开「示波器音乐」那一页。
 
   看不到东西时按顺序查这三条：
     1. **还没开播 → 示波器停在「在等口出第一帧」。** 这个口不声明采样率（文件的率
@@ -103,11 +102,12 @@ cat <<'TXT'
     3. 一团糊、不像画 → 一屏太长了。X-Y 只在一屏拿得到原始样本时才是轨迹；
        把 SPAN 调回 1024。
 
-  能拧的：
-    param set gain 2          画太小就往上拧（超过 1 会削顶）
-    param set speed 0.25      慢放看轨迹怎么走出来的
-    param set loop_play false 放完就停，不循环
-    action restart            从头播
+  能拧的（照抄就能跑）：
+    sigflow-cli --node music param set gain 2          画太小就往上拧（超过 1 会削顶）
+    sigflow-cli --node music param set speed 0.25      慢放看轨迹怎么走出来的
+    sigflow-cli --node music param set loop_play false 放完就停，不循环
+    sigflow-cli --node music param set loop_play true  停了之后打开循环 = 接着放
+    sigflow-cli --node music action invoke restart     从头播
 
   没有余辉——真机的拖影是示波器音乐好看的一半，我们还没做（X-Y 平面上要另开一张
   累积网格）。所以现在看到的是单帧线条，比真机干净、也比真机冷清。
