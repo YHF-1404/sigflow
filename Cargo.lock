@@ -725,6 +725,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sigflow-plugin-wav-source"
+version = "0.1.0"
+dependencies = [
+ "sigflow-plugin-sdk",
+ "sigflow-types",
+ "toml",
+]
+
+[[package]]
 name = "sigflow-plugin-window-filtfilt"
 version = "0.1.0"
 dependencies = [
