@@ -1208,6 +1208,12 @@ pub struct DisplaySetting {
     #[cfg_attr(feature = "ts", ts(optional))]
     pub y: Option<ChanRef>,
     /// 辉光强度 `[0, 1]`，0 = 关。玻璃和荧光粉的散射，**看的时候加的**。
+    ///
+    /// **缺省 0.55 / 2.5 不是"新功能默认关"，是"缺键 = 以前那样"**：辉光在契约里是
+    /// 新的，在屏幕上不是——它早就以写死的常数在前端无条件叠加（`Oscilloscope.svelte`
+    /// 的 `BLOOM_GAIN = 0.55` / `BLOOM_PX = 2.5`），hml 正是看着那个效果说"不错"才要
+    /// 求把它提成滑块的。缺省定 0 的话，他现在看到的辉光会在下次部署后消失，而**配置
+    /// 文件里什么都没变**——那是最难查的一种。要关就显式写 0。
     #[serde(default = "default_bloom_gain")]
     pub bloom_gain: f32,
     /// 辉光半径，**屏幕像素**，0 = 关。
@@ -1231,12 +1237,14 @@ impl Default for DisplaySetting {
     }
 }
 
+/// = 前端 `BLOOM_GAIN`，把写死的常数提成字段,缺省取它本来的值。
 fn default_bloom_gain() -> f32 {
-    0.0
+    0.55
 }
 
+/// = 前端 `BLOOM_PX`。
 fn default_bloom_px() -> f32 {
-    0.0
+    2.5
 }
 
 impl DisplaySetting {
@@ -1918,7 +1926,7 @@ timebase = { span_scans = 4000 }
     }
 
     #[test]
-    fn 辉光是显示设置_缺省关_两项都要有效才算开() {
+    fn 辉光是显示设置_缺省等于以前那样_两项都要有效才算开() {
         // bloom 是**看的时候**加的(玻璃和荧光粉的散射),不进累积层——所以它跟
         // beam_ink 正相反：改它连密度图都不用重来。当然更不该进 same_geometry。
         let a = setup();
@@ -1927,10 +1935,28 @@ timebase = { span_scans = 4000 }
         assert!(b.validate().is_ok(), "{:?}", b.validate());
         assert!(a.same_geometry(&b), "辉光不该进 same_geometry");
 
-        // 缺省是关的：老 setup 读进来不该突然发光
+        // **缺省 = 以前那样**,不是"新功能默认关"：辉光早就以写死的常数在前端无条件
+        // 叠加(BLOOM_GAIN 0.55 / BLOOM_PX 2.5),缺省定 0 会让屏上已有的辉光在下次
+        // 部署后消失、而配置文件一个字没变。要关就显式写 0。
         let d = DisplaySetting::default();
-        assert_eq!((d.bloom_gain, d.bloom_px), (0.0, 0.0));
-        assert!(!d.bloom_on());
+        assert_eq!((d.bloom_gain, d.bloom_px), (0.55, 2.5));
+        assert!(d.bloom_on(), "缺省就是开的");
+        // 老 setup(没有 display 段)读进来也该是这个值
+        let old: ScopeConfig = toml::from_str(
+            "depth = { max_points = 1000 }\nclock = { mode = \"native\" }\n\
+             timebase = { span_scans = 100 }\n[display]\nmode = \"xy\"\n\
+             x = { column = \"iu\" }\ny = { column = \"iv\" }\n",
+        )
+        .unwrap();
+        let od = old.display.as_ref().unwrap();
+        assert_eq!((od.bloom_gain, od.bloom_px), (0.55, 2.5), "缺键要解成以前那样");
+        // 显式关得写出来
+        let off: ScopeConfig = toml::from_str(
+            "depth = { max_points = 1000 }\nclock = { mode = \"native\" }\n\
+             timebase = { span_scans = 100 }\n[display]\nbloom_gain = 0.0\n",
+        )
+        .unwrap();
+        assert!(!off.display.as_ref().unwrap().bloom_on());
 
         // 两项都要有效才算开——只给一项等于没开,别让人以为拧了强度就该亮
         assert!(!DisplaySetting { bloom_gain: 0.9, bloom_px: 0.0, ..Default::default() }.bloom_on());
