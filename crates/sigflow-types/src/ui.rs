@@ -1015,6 +1015,22 @@ pub struct AcqSetting {
     /// 余辉衰减：每次刷新 count × decay，[0, 1]；**1 = 不衰减**（无限余辉）。
     #[serde(default = "default_persist_decay")]
     pub persist_decay: f32,
+    /// 束的沉积量（辉度）：画一步在余辉图上留下多少"墨"。
+    ///
+    /// **一步一份固定能量，摊在它扫过的格子上**——这是 CRT 的物理：束按**时间**沉积
+    /// 能量，走得快的那一段（陡沿）把同一份能量摊到很多格子上，所以陡沿淡、平台亮。
+    /// 早先两边都做反了：X-Y 每段按常数 alpha 画、Y-T 的密度图每个纵向格子 `+1`，
+    /// 于是**跨 200 格的陡沿沉积了平台的 200 倍**，真机上恰好相反（sigflow-core
+    /// `ae6d8d3` 改的；受控对照：旧 圆 145 / 转场 155 = 0.9，新 255 / 3 = 85）。
+    ///
+    /// **放 `acq` 不放 `display`**：它管的是**怎么累**（跟 `persist_decay` 一伙），
+    /// 不是怎么投影。而且它**必须两种画法同一个数**——辉度旋钮在 X-Y 和 Y-T 上意思
+    /// 不同，就是我们记了一路的那种病。
+    ///
+    /// 改它**要清密度图**（旧计数是按旧标度沉积的，混在一起没有意义），**不动环**
+    /// ——跟改 `v_div` 同一条规矩，见 docs/scope-contract.md §13.1。
+    #[serde(default = "default_beam_ink")]
+    pub beam_ink: f32,
 }
 
 fn default_average_n() -> u32 {
@@ -1025,12 +1041,18 @@ fn default_persist_decay() -> f32 {
     0.9
 }
 
+/// 现在引擎里写死的那个值——换成字段是为了让它可调,不是为了换默认。
+fn default_beam_ink() -> f32 {
+    64.0
+}
+
 impl Default for AcqSetting {
     fn default() -> Self {
         AcqSetting {
             mode: AcqMode::Normal,
             average_n: default_average_n(),
             persist_decay: default_persist_decay(),
+            beam_ink: default_beam_ink(),
         }
     }
 }
@@ -1047,6 +1069,14 @@ impl AcqSetting {
             return Err(format!(
                 "acq.persist_decay must be within [0, 1] (got {})",
                 self.persist_decay
+            ));
+        }
+        // 上界不设：辉度拧到顶是"糊成一片白",难看但不是错,而且真机也让你拧到糊。
+        // 0 是合法的（不留墨 = 关掉余辉的另一种说法）；负数和 NaN 不是。
+        if !(self.beam_ink.is_finite() && self.beam_ink >= 0.0) {
+            return Err(format!(
+                "acq.beam_ink must be finite and >= 0 (got {})",
+                self.beam_ink
             ));
         }
         Ok(())
@@ -1829,6 +1859,40 @@ timebase = { span_scans = 4000 }
         c.timebase.span_s = Some(1.0);
         c.timebase.position = 1.5;
         assert!(c.validate().unwrap_err().contains("position"));
+    }
+
+    #[test]
+    fn 辉度是采集设置_可为零_不设上界_而且不进几何() {
+        // beam_ink 管"怎么累"(跟 persist_decay 一伙),不是"怎么投影"——所以它跟
+        // vertical / display 一样：能让密度图重来,但不动环。
+        let a = setup();
+        let mut b = setup();
+        b.acq.beam_ink = 200.0;
+        assert!(b.validate().is_ok());
+        assert!(a.same_geometry(&b), "辉度不该进 same_geometry");
+
+        // 0 合法：不留墨 = 关掉余辉的另一种说法
+        let mut c = setup();
+        c.acq.beam_ink = 0.0;
+        assert!(c.validate().is_ok());
+
+        // 负数和 NaN 不合法;上界不设(拧到糊是难看,不是错)
+        for bad in [-1.0f32, f32::NAN, f32::INFINITY] {
+            let mut c = setup();
+            c.acq.beam_ink = bad;
+            assert!(c.validate().is_err(), "beam_ink = {bad} 该拒");
+        }
+        let mut c = setup();
+        c.acq.beam_ink = 1e6;
+        assert!(c.validate().is_ok(), "上界不设");
+
+        // 老 setup 没有这一项 → 缺省 64（换成字段不是为了换默认）
+        let d: ScopeConfig = toml::from_str(
+            "depth = { max_points = 1000 }\nclock = { mode = \"native\" }\n\
+             timebase = { span_scans = 100 }\n[acq]\nmode = \"persist\"\n",
+        )
+        .unwrap();
+        assert_eq!(d.acq.beam_ink, 64.0);
     }
 
     #[test]
