@@ -990,9 +990,12 @@ impl Timebase {
 /// 出的那些，和**自由跑按屏长切出来的**那些。后者是 §9.5 为了"常驻示波器攒了一小时
 /// 却一个入口都没有"补的，`roll` 档也照切。
 ///
-/// 写清楚是因为实现只兑现了前一半（见 docs/scope-contract.md §9.7）：自由跑的分段
-/// 落在引擎里一个**独立的分支**里，接上了分段翻页、没接上密度累加。所以自由跑 +
-/// persist 今天没有余辉——**那是实现漏了这一半，不是这一档本来就没有**。
+/// 这句话曾经只兑现了一半：自由跑的分段落在引擎里一个**独立的分支**里，接上了分段
+/// 翻页、没接上密度累加，于是自由跑 + persist 没有余辉。**已修**（sigflow-core
+/// `5c3220e`：自由跑切出的记录照样喂密度图，按算术级数取第 k 条、不先攒 Vec——那条
+/// 采集线程不能拖）。留着这一段是因为**根因值得记**：`记录` 多了一个来源，而只接上
+/// 了当时想着的那个消费者，没人回头问"还有谁在消费记录"（见 docs/scope-contract.md
+/// §9.7 与 §13.7）。
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(TS))]
@@ -1191,7 +1194,7 @@ pub enum DisplayMode {
 /// （`span < 2 × px`，且 ≤ 65536 拍），再长就退化成每列的 (min, max)，那时
 /// `x[i]` 与 `y[i]` 是**一段窗口里的极值**而不是同一拍，连出来的不是轨迹。
 /// 所以 X-Y 要把一屏收短（48 kHz 的音频、px = 1024 时，一屏 20–40 ms）。
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ts", derive(TS))]
 pub struct DisplaySetting {
     #[serde(default)]
@@ -1204,11 +1207,63 @@ pub struct DisplaySetting {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub y: Option<ChanRef>,
+    /// 辉光强度 `[0, 1]`，0 = 关。玻璃和荧光粉的散射，**看的时候加的**。
+    #[serde(default = "default_bloom_gain")]
+    pub bloom_gain: f32,
+    /// 辉光半径，**屏幕像素**，0 = 关。
+    ///
+    /// 按屏幕像素给、不按纹理格子给：密度纹理的分辨率随时基和通道数变，按格子给的话
+    /// **同一个设置在不同时基下糊出来的圈会一大一小**——那是把一个显示量交给了一个
+    /// 会自己变的标度（同 §13.2 那条"别写死一个会漂的数"）。
+    #[serde(default = "default_bloom_px")]
+    pub bloom_px: f32,
+}
+
+impl Default for DisplaySetting {
+    fn default() -> Self {
+        DisplaySetting {
+            mode: DisplayMode::default(),
+            x: None,
+            y: None,
+            bloom_gain: default_bloom_gain(),
+            bloom_px: default_bloom_px(),
+        }
+    }
+}
+
+fn default_bloom_gain() -> f32 {
+    0.0
+}
+
+fn default_bloom_px() -> f32 {
+    0.0
 }
 
 impl DisplaySetting {
     pub fn is_xy(&self) -> bool {
         self.mode == DisplayMode::Xy
+    }
+
+    /// 辉光开着吗——两项都要有效才算开（半径 0 或强度 0 都是关）。
+    pub fn bloom_on(&self) -> bool {
+        self.bloom_gain > 0.0 && self.bloom_px > 0.0
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if !(self.bloom_gain.is_finite() && (0.0..=1.0).contains(&self.bloom_gain)) {
+            return Err(format!(
+                "display.bloom_gain must be within [0, 1] (got {})",
+                self.bloom_gain
+            ));
+        }
+        // 半径上界不设：糊成一团是难看,不是错。负数和 NaN 是错。
+        if !(self.bloom_px.is_finite() && self.bloom_px >= 0.0) {
+            return Err(format!(
+                "display.bloom_px must be finite and >= 0 (got {})",
+                self.bloom_px
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -1584,6 +1639,7 @@ impl ScopeConfig {
                 .map_err(|e| format!("measure.channels[{i}]: {e}"))?;
         }
         if let Some(d) = &self.display {
+            d.validate().map_err(|e| format!("display: {e}"))?;
             if d.is_xy() {
                 let (x, y) = match (&d.x, &d.y) {
                     (Some(x), Some(y)) => (x, y),
@@ -1862,6 +1918,42 @@ timebase = { span_scans = 4000 }
     }
 
     #[test]
+    fn 辉光是显示设置_缺省关_两项都要有效才算开() {
+        // bloom 是**看的时候**加的(玻璃和荧光粉的散射),不进累积层——所以它跟
+        // beam_ink 正相反：改它连密度图都不用重来。当然更不该进 same_geometry。
+        let a = setup();
+        let mut b = setup();
+        b.display = Some(DisplaySetting { bloom_gain: 0.6, bloom_px: 3.0, ..Default::default() });
+        assert!(b.validate().is_ok(), "{:?}", b.validate());
+        assert!(a.same_geometry(&b), "辉光不该进 same_geometry");
+
+        // 缺省是关的：老 setup 读进来不该突然发光
+        let d = DisplaySetting::default();
+        assert_eq!((d.bloom_gain, d.bloom_px), (0.0, 0.0));
+        assert!(!d.bloom_on());
+
+        // 两项都要有效才算开——只给一项等于没开,别让人以为拧了强度就该亮
+        assert!(!DisplaySetting { bloom_gain: 0.9, bloom_px: 0.0, ..Default::default() }.bloom_on());
+        assert!(!DisplaySetting { bloom_gain: 0.0, bloom_px: 8.0, ..Default::default() }.bloom_on());
+        assert!(DisplaySetting { bloom_gain: 0.1, bloom_px: 1.0, ..Default::default() }.bloom_on());
+
+        // 强度有上界(它是个比例),半径没有(糊成一团是难看不是错)
+        for bad in [-0.1f32, 1.1, f32::NAN] {
+            let mut c = setup();
+            c.display = Some(DisplaySetting { bloom_gain: bad, ..Default::default() });
+            assert!(c.validate().is_err(), "bloom_gain = {bad} 该拒");
+        }
+        for bad in [-1.0f32, f32::NAN, f32::INFINITY] {
+            let mut c = setup();
+            c.display = Some(DisplaySetting { bloom_px: bad, ..Default::default() });
+            assert!(c.validate().is_err(), "bloom_px = {bad} 该拒");
+        }
+        let mut c = setup();
+        c.display = Some(DisplaySetting { bloom_gain: 1.0, bloom_px: 1e4, ..Default::default() });
+        assert!(c.validate().is_ok(), "半径不设上界");
+    }
+
+    #[test]
     fn 辉度是采集设置_可为零_不设上界_而且不进几何() {
         // beam_ink 管"怎么累"(跟 persist_decay 一伙),不是"怎么投影"——所以它跟
         // vertical / display 一样：能让密度图重来,但不动环。
@@ -1904,6 +1996,7 @@ timebase = { span_scans = 4000 }
             mode: DisplayMode::Xy,
             x: Some("iu".parse().unwrap()),
             y: Some("iv".parse().unwrap()),
+            ..Default::default()
         });
         assert!(b.validate().is_ok(), "{:?}", b.validate());
         assert!(a.same_geometry(&b), "display 不该进 same_geometry");
@@ -1914,6 +2007,7 @@ timebase = { span_scans = 4000 }
             mode: DisplayMode::Xy,
             x: Some("iu".parse().unwrap()),
             y: None,
+            ..Default::default()
         });
         assert!(c.validate().unwrap_err().contains("x 和 y"));
 
@@ -1923,6 +2017,7 @@ timebase = { span_scans = 4000 }
             mode: DisplayMode::Xy,
             x: Some("iu".parse().unwrap()),
             y: Some("iu".parse().unwrap()),
+            ..Default::default()
         });
         assert!(c.validate().unwrap_err().contains("同一路"));
 
@@ -1932,6 +2027,7 @@ timebase = { span_scans = 4000 }
             mode: DisplayMode::Xy,
             x: Some("iu".parse().unwrap()),
             y: Some("0/iu".parse().unwrap()),
+            ..Default::default()
         });
         assert_ne!(
             c.display.as_ref().unwrap().x,
@@ -1949,6 +2045,7 @@ timebase = { span_scans = 4000 }
             mode: DisplayMode::Xy,
             x: Some("0/iu".parse().unwrap()),
             y: Some("1/iu".parse().unwrap()),
+            ..Default::default()
         });
         assert!(c.validate().is_ok(), "{:?}", c.validate());
 
