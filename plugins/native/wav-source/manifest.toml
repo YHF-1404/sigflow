@@ -1,0 +1,87 @@
+# sigflow.io.wav_source —— 把一个 stereo WAV 文件播成一个两列的口（`l` / `r`）。
+#
+# 为什么存在：示波器音乐（oscilloscope music）——两路音频驱动示波器的 X-Y，屏上
+# 是画不是波形。example/oscilloscope-music.sh 用它放 Revision 2025 的 Wild 冠军
+# Primer。也可以拿它给示波器喂任何真实录音。
+#
+# **不声明 declared_rate_hz**：文件的采样率是运行期才知道的（取决于用户给哪个
+# 文件），而声明的率必须是编译期常量。所以每一帧带 `sfrate01` 注解说实际率
+# ——同 sig-gen。
+#
+# **不声明率 ≠ 没有率**：第一帧的注解一到，口就有率了，示波器四种时钟
+# （native / auto / fixed）都建得起来（sigflow-core 在 sig-gen 上四种都实测过）。
+# 代价只是**率是第一帧才知道的观测**：节点起来、还没开始播的时候，常驻示波器会
+# 停在"在等口出第一帧"——那是对的行为，但看着像坏了，所以例子里要说一句。
+#
+# 例子选 `native`，理由是**原样进环、画的是真轨迹**（重采样会插值），不是"只能它"。
+#
+# **只收 stereo**：X-Y 要两路不同的信号，单声道画出来是一条对角线（x = y）。
+# 别的声道数当场报错并说清怎么转。要放别的格式（FLAC / MP3）先转成 WAV：
+#   ffmpeg -i primer.flac primer.wav
+#
+# 出帧节奏按墙钟（同 sig-gen）：每个 tick 只发到"此刻该存在"的样本数，
+# sample_index / t0_ns 是真时间。整个 data 段读进内存后按帧解码（16/24/32 位
+# 整数和 32 位浮点都认），所以内存 ≈ 文件大小。
+name = "sigflow.io.wav_source"
+version = "0.1.0"
+category = "compute"
+
+[runtime]
+type = "native"
+library = "libsigflow_plugin_wav_source.so"
+entry = "sigflow_plugin_create"
+
+# 两列：左右声道。X-Y 上一路当横轴、一路当纵轴。
+# 单位写 "" 而不是 "V"：WAV 的样本是归一化到 ±1 的无量纲值，不是伏特——
+# 标成 V 会让刻度和测量读数说一个不存在的物理量。
+[[ports]]
+id = "audio"
+direction = "producer"
+semantic_type = { kind = "timeseries.signal", dtype = "f32", clock_domain = "host_monotonic" }
+max_frame_bytes = 262144
+
+[[ports.columns]]
+id = "l"
+label = "左 / X"
+kind = "signal"
+bound = { min = -1.0, max = 1.0 }
+
+[[ports.columns]]
+id = "r"
+label = "右 / Y"
+kind = "signal"
+bound = { min = -1.0, max = 1.0 }
+
+[[parameters]]
+id = "path"
+param_type = "string"
+default = { string = "" }
+hot_change = true
+label = "WAV 文件路径（stereo；空 = 不出数）"
+
+[[parameters]]
+id = "loop_play"
+param_type = "bool"
+default = { bool = true }
+hot_change = true
+label = "放完从头再来"
+
+[[parameters]]
+id = "gain"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 8.0 } }
+default = { f64 = 1.0 }
+hot_change = true
+label = "增益（画太小就往上拧；超过 1 会削顶）"
+
+[[parameters]]
+id = "speed"
+param_type = "f64"
+range = { f64_range = { min = 0.05, max = 4.0 } }
+default = { f64 = 1.0 }
+hot_change = true
+label = "播放速度（× 文件采样率；慢放看轨迹细节）"
+
+[[actions]]
+id = "restart"
+label = "从头播"

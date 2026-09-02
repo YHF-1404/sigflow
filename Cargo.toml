@@ -12,6 +12,7 @@ members = [
     "plugins/native/passthrough",
     "plugins/native/sine-generator",
     "plugins/native/sig-gen",
+    "plugins/native/wav-source",
     "plugins/native/data-monitor",
     "plugins/native/storage",
     "plugins/native/replay-source",
