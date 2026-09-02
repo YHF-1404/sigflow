@@ -1253,6 +1253,21 @@ pub struct ScopeConfig {
     pub clock: ScopeClock,
     /// 进环的列，**单源简写**：源 = 控件绑定的那个口。空 = 整口。字节预算按选中
     /// 列的 dtype 字节算。与 `sources` 二选一。
+    ///
+    /// **这是"采哪些"，不是"画哪些"**（2026-09-02，hml 定：跟真机一致）。通道栏
+    /// 去掉勾选 = 那一路不进环，让出来的深度和采样率归其余通道（控制律里每通道
+    /// 深度 = 总点数 ÷ 通道数）。于是每一路有三种状态，别把后两种混成一种：
+    ///
+    /// | 状态 | 在 `channels` | `vertical.on` | 含义 |
+    /// |---|---|---|---|
+    /// | 关 | 否 | —— | 不采集、不占深度和率；档位仍留在 `vertical` 里 |
+    /// | 采而不画 | 是 | `false` | 进环、占深度；屏上不画。**触发源要藏就用这个** |
+    /// | 开 | 是 | `true` | 进环并画 |
+    ///
+    /// **勾选是几何改动**：通道数变了 → 每通道深度变了 → 率变了 → 环重建，攒的
+    /// 历史当场没。所以 UI 上**停下来之后勾选不能进引擎**（同"停下来改时基"那条：
+    /// 停着的时候时基、垂直、勾选都只能是"看"的参数，走本地视图）——否则取消一个
+    /// 勾选就把你正盯着的那一屏删了。
     #[serde(default)]
     pub channels: Vec<ColumnRef>,
     /// 多源：一台示波器收几个口（可跨节点，同主机）的通道。非空时以它为准，
@@ -1283,8 +1298,16 @@ pub struct ScopeConfig {
     pub trigger: Option<ScopeTrigger>,
     #[serde(default)]
     pub acq: AcqSetting,
+    /// **每通道的档位表**，不是"要画的曲线表"：允许包含此刻不在 `channels` 里的
+    /// 通道——关掉一路再打开，V/div、偏移、耦合还是原来那份（真机就是这样）。
+    /// 所以取消勾选时**不要删掉对应的 `vertical`**，删了档位就丢了。
+    ///
+    /// 引用一个没在采集的通道不是错，`validate` 跳过它；引用一个**列契约里根本
+    /// 没有**的列仍然是错，由壳体解析时报（类型层看不见列契约，分不开这两种）。
     #[serde(default)]
     pub vertical: Vec<VerticalSetting>,
+    /// 量哪些通道。与 `vertical` 同样的规则：没在采集的通道跳过（不出读数，也不
+    /// 报错），列契约里没有的列由壳体当场报。
     #[serde(default)]
     pub measure: MeasureSetting,
 }
@@ -1438,28 +1461,25 @@ impl ScopeConfig {
         if self.acq.mode == AcqMode::Average && self.trigger.is_none() {
             return Err("acq.mode = average needs a trigger".to_string());
         }
+        // vertical / measure 引用**没在采集的通道**不是错：`channels` 是"采哪些"，
+        // `vertical` 是每通道的档位表，关掉的通道档位要留着（真机关掉 CH2 再打开，
+        // 还是原来那个 V/div）。这里只校验引用本身立得住：源名在、写法合法。
+        //
+        // **写错列名谁来抓**：不是这里。类型层手里没有口的列契约，"合法但这轮没勾
+        // 选"和"根本不存在的列"在这一层长得一模一样（第七条那族：单个观察与多种状
+        // 态相容，再怎么盯也分不开）。壳体解析 spec 时对着列契约查，查不到当场报，
+        // **不许静默跳过**——放开这条的代价，就是那半张网必须在壳体那边补上。
         for (i, v) in self.vertical.iter().enumerate() {
             v.validate().map_err(|e| format!("vertical[{i}]: {e}"))?;
-            let (slot, col) = self
-                .resolve(&v.channel)
+            self.resolve(&v.channel)
                 .map_err(|e| format!("vertical[{i}].channel: {e}"))?;
-            if !col.selected_in(self.channels_of(slot)) {
-                return Err(format!(
-                    "vertical[{i}]: channel {} is not in channels",
-                    v.channel
-                ));
-            }
         }
         self.measure.validate()?;
         for (i, c) in self.measure.channels.iter().enumerate() {
             c.validate()
                 .map_err(|e| format!("measure.channels[{i}]: {e}"))?;
-            let (slot, col) = self
-                .resolve(c)
+            self.resolve(c)
                 .map_err(|e| format!("measure.channels[{i}]: {e}"))?;
-            if !col.selected_in(self.channels_of(slot)) {
-                return Err(format!("measure.channels[{i}]: {c} is not in channels"));
-            }
         }
         Ok(())
     }
@@ -1712,18 +1732,38 @@ timebase = { span_scans = 4000 }
     }
 
     #[test]
-    fn 垂直与测量的通道必须在选中列里() {
+    fn 关掉的通道留着档位不算错_但源名写错照旧报() {
+        // `channels` 是"采哪些"：去掉勾选那一路不进环，而它的档位要留在 vertical
+        // 里（关掉 CH2 再打开还是原来那个 V/div）。所以引用一个没勾选的通道 = 对。
         let mut c = setup();
         c.vertical[0].channel = "iq".parse().unwrap();
-        let e = c.validate().unwrap_err();
         assert!(
-            e.contains("vertical[0]") && e.contains("not in channels"),
-            "{e}"
+            c.validate().is_ok(),
+            "没在采集的通道留着档位不该被拒：{:?}",
+            c.validate()
         );
 
         let mut c = setup();
-        c.measure.channels = vec!["nope".parse().unwrap()];
-        assert!(c.validate().unwrap_err().contains("measure.channels[0]"));
+        c.measure.channels = vec!["iq".parse().unwrap()];
+        assert!(c.validate().is_ok(), "measure 同理");
+
+        // 但引用立不住仍然当场报：源名不在 sources 里。列名写错这一层看不见
+        // （类型层没有列契约），那半张网在壳体解析 spec 时补。
+        let mut c = setup();
+        c.channels.clear();
+        c.sources = vec![
+            ScopeSource { name: None, node: None, port: "loop".into(), channels: vec![] },
+            ScopeSource { name: None, node: None, port: "rotor".into(), channels: vec![] },
+        ];
+        c.clock.mode = ClockMode::Fixed;
+        c.clock.fs_hz = Some(20000.0);
+        c.trigger.as_mut().unwrap().source = "loop:iu".parse().unwrap();
+        c.vertical[0].channel = "nosuch:iu".parse().unwrap();
+        let e = c.validate().unwrap_err();
+        assert!(
+            e.contains("vertical[0].channel") && e.contains("nosuch"),
+            "{e}"
+        );
 
         // 空选列 = 整口：什么通道都算在里面
         let mut c = setup();
