@@ -1,6 +1,7 @@
 #!/bin/sh
 # example/hello.sh — 无硬件入门图例：正弦源 → 直通增益 → 波形监视。
 # requires-native: sine-generator passthrough data-monitor
+# forwards: VOFA_HOST RAW_PORT SINE_HZ
 #
 # 三个节点、两条边，任何机器可跑：sine 产 440Hz 正弦流，gain 直通
 # （passthrough 插件，带 gain 参数），mon 把流推去 VOFA+（UDP JustFloat）

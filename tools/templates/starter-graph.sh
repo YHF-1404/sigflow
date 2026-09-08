@@ -1,6 +1,7 @@
 #!/bin/sh
 # starter.sh — __PROJECT_NAME__ 起步图例：正弦源 → __PLUGIN_NAME__ → 波形监视。
 # requires-native: sine-generator __PLUGIN_NAME__ data-monitor
+# forwards: VOFA_HOST RAW_PORT SINE_HZ
 #
 # 生成自 new-project.sh：验证工程接线用，把 proc 节点换成你的真实拓扑。
 # 前提：sigflow-cli 在 PATH、requires 里的插件已入仓库（./redeploy.sh

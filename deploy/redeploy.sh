@@ -19,9 +19,12 @@
 # 不支持从 Windows 主机**发起**（需要 cross/docker 等 Linux 侧工具链）。
 #
 # <graph> 在项目 example/ 与公共 example/ 里按名字解析（路径亦可）。
-# 图例头部自我声明所需插件（缺省 = 两侧全部有 build.sh 的插件）：
+# 图例头部自我声明所需插件（缺省 = 两侧全部有 build.sh 的插件）和要转发的
+# 自家旋钮（远程/adb 模式只有名单里的 env 才到得了目标机；值按目标机解释，
+# 路径写目标机上的路径）：
 #   # requires-native: trigger-capture data-monitor ...
 #   # requires-process: my-py-node
+#   # forwards: WAV SPAN
 #
 # 环境接口（wrapper 负责导出）：
 #   SIGFLOW_PROJECT_DIR   项目仓库根（plugins/ example/ deploy/hooks/）；
@@ -29,9 +32,10 @@
 #   SIGFLOW_CORE_DIR      核心源码 checkout；有=从源码打包安装（开发流），
 #                         无=用 PATH 里已装核心，再无=本地走 install.sh
 #   SIGFLOW_PUBLIC_DIR    公共面 checkout；缺省 = 本脚本所在仓库
-#   SIGFLOW_FORWARD_VARS  远程/adb 模式额外转发给图例的 env 名单（空格分隔；
-#                         只转发已设非空者——图例自带默认值的变量别在
-#                         wrapper 里兜默认，会盖死图例的默认）
+#   SIGFLOW_FORWARD_VARS  远程/adb 模式额外转发给图例的 env 名单（空格分隔，
+#                         与图例头部 forwards: 取并集；只转发已设非空者——
+#                         图例自带默认值的变量别在 wrapper 里兜默认，会盖
+#                         死图例的默认）
 #
 # 项目钩子（$SIGFLOW_PROJECT_DIR/deploy/hooks/，都可缺省）：
 #   precheck.sh        装完核心后在部署目标机上 source（本地与 --phase
@@ -101,6 +105,7 @@ esac
 export NODE_DIR DATA_ROOT
 
 # 远程模式转发到远端的 env 名单 = 引擎基础 + wrapper 的 SIGFLOW_FORWARD_VARS
+#（+ 图例自报的 forwards:，图例解析之后才并入，见下）
 FORWARD_VARS=(NODE_DIR GRAPH_NAME SIGFLOW_ROOT_PORT SIGFLOW_BIND_HOST)
 if [ -n "${SIGFLOW_FORWARD_VARS:-}" ]; then
     # 词分割整个值（不是 read -a：那只吃第一行，多行清单会静默丢光——
@@ -134,7 +139,9 @@ while [ $# -gt 0 ]; do
         --graph)   GRAPH="$2"; shift 2 ;;
         --graph=*) GRAPH="${1#--graph=}"; shift ;;
         -h|--help)
-            sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'
+            # 头注释整块就是文档：印到 set -euo 之前为止（写死行号会随头
+            # 注释增删悄悄截在半句话上）
+            sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
             exit 0 ;;
         -*) die "未知参数 '$1'（见 --help）" ;;
         *)  [ -z "$GRAPH" ] || die "多余的位置参数 '$1'（图例只取一个）"
@@ -213,6 +220,23 @@ if [ "$PHASE" = auto ]; then
     done
     for _p in "${PROCESS_PLUGINS[@]:+${PROCESS_PLUGINS[@]}}"; do
         [ -d "$(plugin_dir process "$_p")" ] || die "图例声明的 process 插件不存在：${_p}（公共与项目 plugins/process 均无）"
+    done
+fi
+
+# 图例自报的转发旋钮（头部 # forwards: WAV SPAN）：并进 FORWARD_VARS，与
+# wrapper 的 SIGFLOW_FORWARD_VARS 同一名单、同一规则（只转发已设非空者）。
+# 没有这条声明时，直接调引擎（无 wrapper）的远程部署一个图例旋钮都到不了
+# 目标机，而且是安静的——远端拿默认值跑，看不出旋钮没生效。名字写错要当场
+# 死：静默丢掉一个旋钮就是上面那种病。
+if [ "$PHASE" = auto ]; then
+    read -r -a _fwd <<< "$(sed -n 's/^# *forwards: *//p' "$GRAPH_SCRIPT" | head -1)"
+    for _v in "${_fwd[@]:+${_fwd[@]}}"; do
+        case "$_v" in
+            *[!A-Za-z0-9_]*|[0-9]*) die "图例 forwards: 里不是合法的 env 名：'$_v'（$(basename "$GRAPH_SCRIPT")）" ;;
+        esac
+        case " ${FORWARD_VARS[*]} " in *" $_v "*) continue ;; esac
+        FORWARD_VARS+=("$_v")
+        export "$_v"
     done
 fi
 

@@ -1,6 +1,7 @@
 #!/bin/sh
 # example/oscilloscope-music.sh —— 示波器音乐：两路音频驱动 X-Y，屏上是画不是波形。
 # requires-native: wav-source
+# forwards: WAV SPAN
 #
 # 一个节点、一个口、一台整页示波器。默认放的是这个：
 #
@@ -20,6 +21,11 @@
 # 要换别的：WAV=<你的.wav> sh example/oscilloscope-music.sh
 # 换任何一段 stereo 录音都行，只是别人未必是画。
 #
+# 远程部署（deploy/redeploy.sh --host）：船上只有这个脚本，素材得先自己放到
+# 目标机上；WAV 写的是**目标机上**的路径，引擎按上面 `forwards:` 那行把它转发
+# 过去。Windows 目标写 Git Bash 形式（/c/Users/…），不是 WSL 的 /mnt/c/…：
+#   WAV=/c/Users/me/primer-final.wav ./deploy/redeploy.sh oscilloscope-music --host H --passwd P --user U
+#
 # 前提：sigflow-cli 在 PATH，wav-source 已 `sigflow-cli plugin install`。
 # POSIX sh；参数走环境变量：
 #   WAV       WAV 文件路径    （默认 example/oscilloscope-music-res/primer-final.wav）
@@ -37,11 +43,20 @@ export SIGFLOW_ROOT_PORT="${SIGFLOW_ROOT_PORT:-9500}"
 step() { printf '\n\033[1;36m=== %s\033[0m\n' "$*"; }
 
 [ -n "$WAV" ] || { printf '\033[1;31m要给 WAV=<stereo wav 的路径>\033[0m\n' >&2; exit 1; }
-[ -f "$WAV" ] || { printf '\033[1;31m没有这个文件：%s\033[0m\n' "$WAV" >&2
-    printf '素材不进仓（那是别人的作品）——怎么拿见 %s/README.md，\n' \
-        "$_here/oscilloscope-music-res" >&2
-    printf '或者自己给一份：WAV=<你的 stereo wav> sh %s\n' "$0" >&2; exit 1; }
-case "$WAV" in /*) ;; *) WAV="$(pwd)/$WAV" ;; esac   # 节点在别的 cwd 里跑
+if [ ! -f "$WAV" ]; then
+    # 本地 checkout 指 res 目录里的 README；部署船上只有这个脚本（素材目录
+    # 不上船），就指回仓库里那份——指一个这台机器上不存在的文件等于没指。
+    _res_doc="$_here/oscilloscope-music-res/README.md"
+    [ -f "$_res_doc" ] || _res_doc="仓库里的 example/oscilloscope-music-res/README.md（这里没有 checkout，只有脚本自己）"
+    printf '\033[1;31m没有这个文件：%s\033[0m\n' "$WAV" >&2
+    printf '素材不进仓（那是别人的作品），得自己放到这台机器上；怎么拿见 %s\n' "$_res_doc" >&2
+    printf '指定位置：WAV=<这台机器上的 stereo wav> sh %s\n' "$0" >&2
+    printf '远程部署时在发起端写：WAV=<目标机上的路径> ./deploy/redeploy.sh oscilloscope-music --host …（Windows 目标用 /c/… 写法）\n' >&2
+    exit 1
+fi
+# 节点在别的 cwd 里跑，给成绝对路径。Windows 本地给 C:/… 也已经是绝对的——
+# 只认 /* 会把它拼成 "$(pwd)/C:/…"，而且 -f 在前面已经过了，坏在口里才露。
+case "$WAV" in /*|[A-Za-z]:*) ;; *) WAV="$(pwd)/$WAV" ;; esac
 
 step "重建 $NODE_DIR"
 rm -rf "$NODE_DIR"
