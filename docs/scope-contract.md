@@ -65,6 +65,8 @@ TOML 形状在 `ScopeConfig` 的文档注释里。要点：
 - `vertical[]`：逐通道 `v_div > 0`、`offset`、`on`、`coupling dc|ac`、`interp
   none|linear|sinc`、`bw_limit_hz ≥ 0`；`channel` 必须在 `channels` 里（空 = 整口时不
   查）。AC = 减去当前记录窗内的均值，密度 / 视图 / 测量都按耦合后的值。
+  `label`（1～32 字，显示名，没写用列的 label / id）、`color`（`#rrggbb`，没写按列 / 组的
+  缺省配色）两个可选字段是**纯显示**（2026-09-08 hml 要的）：不进环、不清环、不算几何。
 - `measure`：`channels ⊆ channels`、`gate screen|cursors`；`gate = cursors` 时
   `cursors = { a, b }` 必须给（相对时间零点的存储拍数，可为负，a ≠ b）——光标是
   setup 的一部分，UI 拖光标即时 `scope_set`、手势结束回写；引擎不会拿屏幕代替。
