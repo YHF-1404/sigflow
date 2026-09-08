@@ -20,7 +20,9 @@ export GRAPH_NAME="${GRAPH_NAME:-__PROJECT_NAME__}"
 # 在这里加你的项目参数。注意：图例脚本自带 ${VAR:-默认} 的变量别在此再
 # 兜默认——会盖死图例自己的默认值；只列进下面的转发清单即可。
 
-# 远程/adb 模式转发到目标机的项目 env 名单（只转发已设非空者）
+# 远程/adb 模式转发到目标机的项目 env 名单（只转发已设非空者）。图例头部
+# `# forwards:` 自报的旋钮引擎会自己并进名单，这里只列图例没报、wrapper
+# 侧私加的。
 export SIGFLOW_FORWARD_VARS=""
 
 exec "$SIGFLOW_PUBLIC_DIR/deploy/redeploy.sh" "$@"

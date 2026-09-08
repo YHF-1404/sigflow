@@ -19,9 +19,12 @@
 # 不支持从 Windows 主机**发起**（需要 cross/docker 等 Linux 侧工具链）。
 #
 # <graph> 在项目 example/ 与公共 example/ 里按名字解析（路径亦可）。
-# 图例头部自我声明所需插件（缺省 = 两侧全部有 build.sh 的插件）：
+# 图例头部自我声明所需插件（缺省 = 两侧全部有 build.sh 的插件）和要转发的
+# 自家旋钮（远程/adb 模式只有名单里的 env 才到得了目标机；值按目标机解释，
+# 路径写目标机上的路径）：
 #   # requires-native: trigger-capture data-monitor ...
 #   # requires-process: my-py-node
+#   # forwards: WAV SPAN
 #
 # 环境接口（wrapper 负责导出）：
 #   SIGFLOW_PROJECT_DIR   项目仓库根（plugins/ example/ deploy/hooks/）；
@@ -29,9 +32,10 @@
 #   SIGFLOW_CORE_DIR      核心源码 checkout；有=从源码打包安装（开发流），
 #                         无=用 PATH 里已装核心，再无=本地走 install.sh
 #   SIGFLOW_PUBLIC_DIR    公共面 checkout；缺省 = 本脚本所在仓库
-#   SIGFLOW_FORWARD_VARS  远程/adb 模式额外转发给图例的 env 名单（空格分隔；
-#                         只转发已设非空者——图例自带默认值的变量别在
-#                         wrapper 里兜默认，会盖死图例的默认）
+#   SIGFLOW_FORWARD_VARS  远程/adb 模式额外转发给图例的 env 名单（空格分隔，
+#                         与图例头部 forwards: 取并集；只转发已设非空者——
+#                         图例自带默认值的变量别在 wrapper 里兜默认，会盖
+#                         死图例的默认）
 #
 # 项目钩子（$SIGFLOW_PROJECT_DIR/deploy/hooks/，都可缺省）：
 #   precheck.sh        装完核心后在部署目标机上 source（本地与 --phase
@@ -101,6 +105,7 @@ esac
 export NODE_DIR DATA_ROOT
 
 # 远程模式转发到远端的 env 名单 = 引擎基础 + wrapper 的 SIGFLOW_FORWARD_VARS
+#（+ 图例自报的 forwards:，图例解析之后才并入，见下）
 FORWARD_VARS=(NODE_DIR GRAPH_NAME SIGFLOW_ROOT_PORT SIGFLOW_BIND_HOST)
 if [ -n "${SIGFLOW_FORWARD_VARS:-}" ]; then
     # 词分割整个值（不是 read -a：那只吃第一行，多行清单会静默丢光——
@@ -134,7 +139,9 @@ while [ $# -gt 0 ]; do
         --graph)   GRAPH="$2"; shift 2 ;;
         --graph=*) GRAPH="${1#--graph=}"; shift ;;
         -h|--help)
-            sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'
+            # 头注释整块就是文档：印到 set -euo 之前为止（写死行号会随头
+            # 注释增删悄悄截在半句话上）
+            sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
             exit 0 ;;
         -*) die "未知参数 '$1'（见 --help）" ;;
         *)  [ -z "$GRAPH" ] || die "多余的位置参数 '$1'（图例只取一个）"
@@ -213,6 +220,23 @@ if [ "$PHASE" = auto ]; then
     done
     for _p in "${PROCESS_PLUGINS[@]:+${PROCESS_PLUGINS[@]}}"; do
         [ -d "$(plugin_dir process "$_p")" ] || die "图例声明的 process 插件不存在：${_p}（公共与项目 plugins/process 均无）"
+    done
+fi
+
+# 图例自报的转发旋钮（头部 # forwards: WAV SPAN）：并进 FORWARD_VARS，与
+# wrapper 的 SIGFLOW_FORWARD_VARS 同一名单、同一规则（只转发已设非空者）。
+# 没有这条声明时，直接调引擎（无 wrapper）的远程部署一个图例旋钮都到不了
+# 目标机，而且是安静的——远端拿默认值跑，看不出旋钮没生效。名字写错要当场
+# 死：静默丢掉一个旋钮就是上面那种病。
+if [ "$PHASE" = auto ]; then
+    read -r -a _fwd <<< "$(sed -n 's/^# *forwards: *//p' "$GRAPH_SCRIPT" | head -1)"
+    for _v in "${_fwd[@]:+${_fwd[@]}}"; do
+        case "$_v" in
+            *[!A-Za-z0-9_]*|[0-9]*) die "图例 forwards: 里不是合法的 env 名：'$_v'（$(basename "$GRAPH_SCRIPT")）" ;;
+        esac
+        case " ${FORWARD_VARS[*]} " in *" $_v "*) continue ;; esac
+        FORWARD_VARS+=("$_v")
+        export "$_v"
     done
 fi
 
@@ -337,6 +361,20 @@ stop_running() {
     note "done（含 iceoryx2 残留清理）"
 }
 
+# dist/ 里最新的产物（按 mtime）。不用 `ls -t … | head -1`：dist 攒到几十个包
+# 后 ls 的输出超过一次 pipe 写（4 KiB），head 读到第一行就退，ls 的下一次写
+# 吃 SIGPIPE——pipefail 把 141 当失败，而赋值位置上 `x="$(…)"` 的失败没有任何
+# 输出，set -e 于是在"打完包"之后不留一个字地退出。是不是撞上取决于 head 退得
+# 比 ls 第二次写快不快，机器一忙（刚编译完）就撞，闲着就不撞：那个"有时"。
+newest() {  # newest <glob…> → 最新的一个；一个都没有则失败（调用方 die）
+    local f best=""
+    for f in "$@"; do
+        [ -e "$f" ] || continue
+        if [ -z "$best" ] || [ "$f" -nt "$best" ]; then best="$f"; fi
+    done
+    [ -n "$best" ] && printf '%s\n' "$best"
+}
+
 # ============================================================================
 # 核心获取阶梯（本地）：源码打包 → PATH 已装 → install.sh(Releases)
 # ============================================================================
@@ -348,7 +386,7 @@ install_core_local() {  # $1 = os kind
             arch)
                 priv pacman -R --noconfirm sigflow 2>/dev/null || note "（未安装，跳过卸载）"
                 ( cd "$CORE_DIR" && ./package.sh --arch )
-                local pkg; pkg="$(ls -t "$CORE_DIR"/dist/sigflow-*.pkg.tar.zst | head -1)"
+                local pkg; pkg="$(newest "$CORE_DIR"/dist/sigflow-*.pkg.tar.zst)" || die "dist/ 里没有 arch 包"
                 priv pacman -U --noconfirm "$pkg" ;;
             debian)
                 priv dpkg -r sigflow 2>/dev/null || note "（未安装，跳过卸载）"
@@ -356,11 +394,11 @@ install_core_local() {  # $1 = os kind
                     aarch64) ( cd "$CORE_DIR" && ./packaging/deb.sh --arch=arm64 ) ;;
                     *)       ( cd "$CORE_DIR" && ./packaging/deb.sh --arch=amd64 ) ;;
                 esac
-                local deb; deb="$(ls -t "$CORE_DIR"/dist/sigflow_*.deb | head -1)"
+                local deb; deb="$(newest "$CORE_DIR"/dist/sigflow_*.deb)" || die "dist/ 里没有 deb 包"
                 priv dpkg -i "$deb" ;;
             macos)
                 ( cd "$CORE_DIR" && ./package.sh --macos )
-                local mpkg; mpkg="$(ls -t "$CORE_DIR"/dist/sigflow-*.pkg | head -1)"
+                local mpkg; mpkg="$(newest "$CORE_DIR"/dist/sigflow-*.pkg)" || die "dist/ 里没有 macOS 包"
                 priv installer -pkg "$mpkg" -target / ;;
             windows)
                 # 无包管理器：原生 cargo 构建两个 exe，装到 ~/sigflow
@@ -441,6 +479,21 @@ deploy_remote() {
     # 远端命令由登录 shell 解析（可能是 fish：不认 \${VAR:-} 与 VAR=v cmd
     # 前缀赋值）——显式包 sh -c，不依赖登录 shell 方言。
     local probe raw rc=0
+    # 先握一次手，远端命令只用 echo（cmd / sh / fish 都认）：把"连不上 / 密码
+    # 错 / 主机密钥不对"跟"连上了但没有 sh"分开。sshpass 密码错返回 5、主机
+    # 密钥问题 6/7，都不是 255——原来只认 255，密码打错就一路走到"远端既无
+    # POSIX sh 也没探到 Git Bash"，把人往完全错的方向带。标记要求整行相等：
+    # expect 会把 spawn 回显混进 stdout，那一行含 "echo __H0__" 但不是整行。
+    raw="$(ssh_do "echo __H0__")" || rc=$?
+    if ! printf '%s\n' "$raw" | tr -d '\r' | grep -x __H0__ >/dev/null; then
+        case "$rc" in
+            5)   die "ssh 密码不对（sshpass rc=5）：$RUSER@$RHOST" ;;
+            6|7) die "ssh 主机密钥问题（sshpass rc=$rc）：known_hosts 里 $RHOST 的记录与远端不符，或新密钥未接受" ;;
+            255) die "ssh 连接失败（连不上、被拒或认证失败；root 密码登录被拒时用 --user <用户名>，脚本会走 sudo）" ;;
+            *)   die "ssh 握手没回应（rc=$rc）：远端连 echo 都没答，登录 shell 有问题？" ;;
+        esac
+    fi
+    rc=0
     raw="$(ssh_do "sh -c 'echo __P0__; uname -m; . /etc/os-release 2>/dev/null; echo \${ID:-unknown}:\${ID_LIKE:-}; echo __P1__'")" || rc=$?
     [ "$rc" != 255 ] || die "ssh 连接失败（root 密码登录被拒时用 --user <用户名>，脚本会走 sudo）"
     probe="$(echo "$raw" | tr -d '\r' | sed -n '/^__P0__$/,/^__P1__$/p' | sed '1d;$d')"
@@ -537,8 +590,8 @@ deploy_remote() {
              "$stage/deploy/plugins-process" "$stage/deploy/plugins-ui"
 
     case "$pkgkind" in
-        arch)   cp "$(ls -t "$CORE_DIR"/dist/sigflow-*.pkg.tar.zst | head -1)" "$stage/deploy/pkg/" ;;
-        debian) cp "$(ls -t "$CORE_DIR"/dist/sigflow_*.deb | head -1)" "$stage/deploy/pkg/" ;;
+        arch)   cp "$(newest "$CORE_DIR"/dist/sigflow-*.pkg.tar.zst)" "$stage/deploy/pkg/" ;;
+        debian) cp "$(newest "$CORE_DIR"/dist/sigflow_*.deb)" "$stage/deploy/pkg/" ;;
         windows) mkdir -p "$stage/deploy/pkg/bin"
                 cp "$CARGO_TARGET_DIR/$target/release/sigflow-shell.exe" \
                    "$CARGO_TARGET_DIR/$target/release/sigflow-cli.exe" "$stage/deploy/pkg/bin/" ;;
@@ -723,7 +776,7 @@ deploy_adb() {
     SIGFLOW_PUBLIC_DIR="$PUBLIC_DIR" SIGFLOW_PROJECT_DIR="${PROJECT_DIR:-/nonexistent}" \
         "$CORE_DIR/packaging/android.sh" --out="$stage"
     local tarball
-    tarball="$(ls -t "$stage"/sigflow-*-android-arm64-bionic.tar.gz | head -1)"
+    tarball="$(newest "$stage"/sigflow-*-android-arm64-bionic.tar.gz)" || die "android.sh 没在 $stage 出 tarball"
 
     step "推送并安装到设备"
     adb -s "$target" push "$tarball" /data/local/tmp/sigflow-deploy.tar.gz
