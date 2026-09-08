@@ -1136,6 +1136,14 @@ pub struct VerticalSetting {
     /// 带宽限制（Hz），0 = 关。
     #[serde(default)]
     pub bw_limit_hz: f64,
+    /// 显示名（通道栏、测量表、触发源下拉里用它）；没写就用列的 label / id。纯显示，不进环。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub label: Option<String>,
+    /// 迹线颜色 `#rrggbb`；没写就按列 / 组的缺省配色。纯显示，不进环。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub color: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -1158,6 +1166,17 @@ impl VerticalSetting {
                 "bw_limit_hz must be >= 0 (got {})",
                 self.bw_limit_hz
             ));
+        }
+        if let Some(l) = &self.label {
+            if l.trim().is_empty() || l.chars().count() > 32 {
+                return Err(format!("label must be 1..=32 chars (got {l:?})"));
+            }
+        }
+        if let Some(c) = &self.color {
+            let ok = c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit());
+            if !ok {
+                return Err(format!("color must be #rrggbb (got {c:?})"));
+            }
         }
         Ok(())
     }
@@ -2569,5 +2588,38 @@ level = 0.5
         assert!(b.tap.is_none());
         let s = serde_json::to_string(&b).unwrap();
         assert!(s.contains("\"scope\"") && !s.contains("\"tap\""), "{s}");
+    }
+}
+
+#[cfg(test)]
+mod vertical_label_color_tests {
+    use super::*;
+
+    fn vert() -> VerticalSetting {
+        toml::from_str(r#"channel = { column = "iu" }
+v_div = 2.0"#)
+            .unwrap()
+    }
+
+    /// 通道名 / 颜色是可选的显示字段：没写 = None、序列化时不出现（老 node.toml 原样能读）；写了要合法。
+    #[test]
+    fn label_and_color_are_optional_display_fields() {
+        let v = vert();
+        assert_eq!((v.label.as_deref(), v.color.as_deref()), (None, None));
+        assert!(!toml::to_string(&v).unwrap().contains("label"));
+        let mut w = v.clone();
+        w.label = Some("电流 U".into());
+        w.color = Some("#ff8800".into());
+        w.validate().unwrap();
+        let back: VerticalSetting = toml::from_str(&toml::to_string(&w).unwrap()).unwrap();
+        assert_eq!(back, w);
+        let mut bad = v.clone();
+        bad.color = Some("orange".into());
+        assert!(bad.validate().is_err(), "颜色只认 #rrggbb");
+        bad.color = Some("#ff880".into());
+        assert!(bad.validate().is_err());
+        let mut blank = v;
+        blank.label = Some("   ".into());
+        assert!(blank.validate().is_err(), "空名字不算名字（要去掉就别写）");
     }
 }
