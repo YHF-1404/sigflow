@@ -337,6 +337,20 @@ stop_running() {
     note "done（含 iceoryx2 残留清理）"
 }
 
+# dist/ 里最新的产物（按 mtime）。不用 `ls -t … | head -1`：dist 攒到几十个包
+# 后 ls 的输出超过一次 pipe 写（4 KiB），head 读到第一行就退，ls 的下一次写
+# 吃 SIGPIPE——pipefail 把 141 当失败，而赋值位置上 `x="$(…)"` 的失败没有任何
+# 输出，set -e 于是在"打完包"之后不留一个字地退出。是不是撞上取决于 head 退得
+# 比 ls 第二次写快不快，机器一忙（刚编译完）就撞，闲着就不撞：那个"有时"。
+newest() {  # newest <glob…> → 最新的一个；一个都没有则失败（调用方 die）
+    local f best=""
+    for f in "$@"; do
+        [ -e "$f" ] || continue
+        if [ -z "$best" ] || [ "$f" -nt "$best" ]; then best="$f"; fi
+    done
+    [ -n "$best" ] && printf '%s\n' "$best"
+}
+
 # ============================================================================
 # 核心获取阶梯（本地）：源码打包 → PATH 已装 → install.sh(Releases)
 # ============================================================================
@@ -348,7 +362,7 @@ install_core_local() {  # $1 = os kind
             arch)
                 priv pacman -R --noconfirm sigflow 2>/dev/null || note "（未安装，跳过卸载）"
                 ( cd "$CORE_DIR" && ./package.sh --arch )
-                local pkg; pkg="$(ls -t "$CORE_DIR"/dist/sigflow-*.pkg.tar.zst | head -1)"
+                local pkg; pkg="$(newest "$CORE_DIR"/dist/sigflow-*.pkg.tar.zst)" || die "dist/ 里没有 arch 包"
                 priv pacman -U --noconfirm "$pkg" ;;
             debian)
                 priv dpkg -r sigflow 2>/dev/null || note "（未安装，跳过卸载）"
@@ -356,11 +370,11 @@ install_core_local() {  # $1 = os kind
                     aarch64) ( cd "$CORE_DIR" && ./packaging/deb.sh --arch=arm64 ) ;;
                     *)       ( cd "$CORE_DIR" && ./packaging/deb.sh --arch=amd64 ) ;;
                 esac
-                local deb; deb="$(ls -t "$CORE_DIR"/dist/sigflow_*.deb | head -1)"
+                local deb; deb="$(newest "$CORE_DIR"/dist/sigflow_*.deb)" || die "dist/ 里没有 deb 包"
                 priv dpkg -i "$deb" ;;
             macos)
                 ( cd "$CORE_DIR" && ./package.sh --macos )
-                local mpkg; mpkg="$(ls -t "$CORE_DIR"/dist/sigflow-*.pkg | head -1)"
+                local mpkg; mpkg="$(newest "$CORE_DIR"/dist/sigflow-*.pkg)" || die "dist/ 里没有 macOS 包"
                 priv installer -pkg "$mpkg" -target / ;;
             windows)
                 # 无包管理器：原生 cargo 构建两个 exe，装到 ~/sigflow
@@ -537,8 +551,8 @@ deploy_remote() {
              "$stage/deploy/plugins-process" "$stage/deploy/plugins-ui"
 
     case "$pkgkind" in
-        arch)   cp "$(ls -t "$CORE_DIR"/dist/sigflow-*.pkg.tar.zst | head -1)" "$stage/deploy/pkg/" ;;
-        debian) cp "$(ls -t "$CORE_DIR"/dist/sigflow_*.deb | head -1)" "$stage/deploy/pkg/" ;;
+        arch)   cp "$(newest "$CORE_DIR"/dist/sigflow-*.pkg.tar.zst)" "$stage/deploy/pkg/" ;;
+        debian) cp "$(newest "$CORE_DIR"/dist/sigflow_*.deb)" "$stage/deploy/pkg/" ;;
         windows) mkdir -p "$stage/deploy/pkg/bin"
                 cp "$CARGO_TARGET_DIR/$target/release/sigflow-shell.exe" \
                    "$CARGO_TARGET_DIR/$target/release/sigflow-cli.exe" "$stage/deploy/pkg/bin/" ;;
@@ -723,7 +737,7 @@ deploy_adb() {
     SIGFLOW_PUBLIC_DIR="$PUBLIC_DIR" SIGFLOW_PROJECT_DIR="${PROJECT_DIR:-/nonexistent}" \
         "$CORE_DIR/packaging/android.sh" --out="$stage"
     local tarball
-    tarball="$(ls -t "$stage"/sigflow-*-android-arm64-bionic.tar.gz | head -1)"
+    tarball="$(newest "$stage"/sigflow-*-android-arm64-bionic.tar.gz)" || die "android.sh 没在 $stage 出 tarball"
 
     step "推送并安装到设备"
     adb -s "$target" push "$tarball" /data/local/tmp/sigflow-deploy.tar.gz
