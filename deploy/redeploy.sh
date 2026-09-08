@@ -479,6 +479,21 @@ deploy_remote() {
     # 远端命令由登录 shell 解析（可能是 fish：不认 \${VAR:-} 与 VAR=v cmd
     # 前缀赋值）——显式包 sh -c，不依赖登录 shell 方言。
     local probe raw rc=0
+    # 先握一次手，远端命令只用 echo（cmd / sh / fish 都认）：把"连不上 / 密码
+    # 错 / 主机密钥不对"跟"连上了但没有 sh"分开。sshpass 密码错返回 5、主机
+    # 密钥问题 6/7，都不是 255——原来只认 255，密码打错就一路走到"远端既无
+    # POSIX sh 也没探到 Git Bash"，把人往完全错的方向带。标记要求整行相等：
+    # expect 会把 spawn 回显混进 stdout，那一行含 "echo __H0__" 但不是整行。
+    raw="$(ssh_do "echo __H0__")" || rc=$?
+    if ! printf '%s\n' "$raw" | tr -d '\r' | grep -x __H0__ >/dev/null; then
+        case "$rc" in
+            5)   die "ssh 密码不对（sshpass rc=5）：$RUSER@$RHOST" ;;
+            6|7) die "ssh 主机密钥问题（sshpass rc=$rc）：known_hosts 里 $RHOST 的记录与远端不符，或新密钥未接受" ;;
+            255) die "ssh 连接失败（连不上、被拒或认证失败；root 密码登录被拒时用 --user <用户名>，脚本会走 sudo）" ;;
+            *)   die "ssh 握手没回应（rc=$rc）：远端连 echo 都没答，登录 shell 有问题？" ;;
+        esac
+    fi
+    rc=0
     raw="$(ssh_do "sh -c 'echo __P0__; uname -m; . /etc/os-release 2>/dev/null; echo \${ID:-unknown}:\${ID_LIKE:-}; echo __P1__'")" || rc=$?
     [ "$rc" != 255 ] || die "ssh 连接失败（root 密码登录被拒时用 --user <用户名>，脚本会走 sudo）"
     probe="$(echo "$raw" | tr -d '\r' | sed -n '/^__P0__$/,/^__P1__$/p' | sed '1d;$d')"
