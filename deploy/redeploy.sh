@@ -18,6 +18,13 @@
 # SIGFLOW_REMOTE_BASH 可指定非标准 bash.exe 路径）。--host/--adb 仍
 # 不支持从 Windows 主机**发起**（需要 cross/docker 等 Linux 侧工具链）。
 #
+# macOS：支持本地部署（package.sh --macos 出 .pkg，installer 装）；也支持
+# 作为 --host 远程**目标**——本机没法给 Mac 交叉编译（Apple SDK / pkgbuild
+# 只在 Mac 上有），所以走"源码同步 + 远端原生构建"：rsync 三兄弟源码到目标
+# 机 ~/sigflow-deploy-<user>/src/（排除构建产物与素材，远端自己攒 target/
+# 做增量），再在那里跑本脚本的本地模式。目标机前提：系统设置里开「远程登录」
+# （sshd），装 rustup、node/npm、Xcode 命令行工具（pkgbuild）。
+#
 # <graph> 在项目 example/ 与公共 example/ 里按名字解析（路径亦可）。
 # 图例头部自我声明所需插件（缺省 = 两侧全部有 build.sh 的插件）和要转发的
 # 自家旋钮（远程/adb 模式只有名单里的 env 才到得了目标机；值按目标机解释，
@@ -88,6 +95,10 @@ else
         CORE_DIR="$(cd "$PUBLIC_DIR/../sigflow-core" && pwd)"
     fi
     [ -z "$CORE_DIR" ] || [ -f "$CORE_DIR/package.sh" ] || die "SIGFLOW_CORE_DIR 不像核心仓库：$CORE_DIR"
+    # 规范成绝对路径：后面的子步骤在子 shell 里 cd 来 cd 去，相对路径会随
+    # cwd 漂（macOS 远端原生构建就是按 ../<兄弟目录名> 传进来的）
+    [ -z "$PROJECT_DIR" ] || PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
+    [ -z "$CORE_DIR" ] || CORE_DIR="$(cd "$CORE_DIR" && pwd)"
 fi
 
 # ---- 引擎自身参数（项目参数全在 wrapper 侧） --------------------------------
@@ -303,6 +314,41 @@ EXP
     fi
 }
 
+# 目录同步（macOS 远端原生构建把源码送过去）。远端路径相对登录用户家目录。
+# 远端可能是 openrsync（macOS 15 起系统自带，协议 29）：只用 -a --delete
+# --exclude 这些两边都认的参数，别用 --filter / --info。
+rsync_do() {  # rsync_do <本地目录/> <远端目录/> [--exclude=… …]
+    local src="$1" dst="$2"; shift 2
+    if [ -n "$PASSWD" ] && command -v sshpass >/dev/null; then
+        SSHPASS="$PASSWD" sshpass -e rsync -a --delete "$@" -e "ssh $SSH_OPTS" "$src" "$RUSER@$RHOST:$dst"
+    elif [ -n "$PASSWD" ]; then
+        SRC="$src" DST="$dst" RSYNC_EXTRA="$*" expect <<'EXP'
+set timeout -1
+spawn rsync -a --delete {*}[split $env(RSYNC_EXTRA)] -e "ssh $env(SSH_OPTS)" $env(SRC) $env(RUSER)@$env(RHOST):$env(DST)
+expect {
+    -re "(?i)password:" { send -- "$env(PASSWD)\r"; exp_continue }
+    eof
+}
+catch wait result
+exit [lindex $result 3]
+EXP
+    else
+        rsync -a --delete "$@" -e "ssh $SSH_OPTS" "$src" "$RUSER@$RHOST:$dst"
+    fi
+}
+
+# 转发给远端的 env 前缀串（VAR='v' VAR2='v2' …）：linux / windows / macOS 三路共用。
+# 未设的变量不转发（图例脚本自带默认）。
+forward_env_string() {
+    local s="" v
+    for v in "${FORWARD_VARS[@]}"; do
+        [ -n "${!v:-}" ] && s+="$v='${!v}' "
+    done
+    [ -n "${DATA_ROOT_SET:-}" ] && s+="DATA_ROOT='$DATA_ROOT' "
+    [ -n "${PYTHON:-}" ] && s+="PYTHON='$PYTHON' "
+    printf '%s' "$s"
+}
+
 # ---- 平台检测 ---------------------------------------------------------------
 detect_os() {  # 输出 arch|debian|macos|windows|linux（在待部署机上调用）
     case "$(uname -s)" in
@@ -423,6 +469,10 @@ install_core_local() {  # $1 = os kind
         # Windows：install.sh 写的是注册表用户 PATH，本进程看不见——补上
         [ "$1" != windows ] || { PATH="${SIGFLOW_WINDOWS_DIR:-$HOME/sigflow}:$PATH"; export PATH; }
     fi
+    # macOS：.pkg 装到 /usr/local/bin，而 ssh 进来的非登录会话未必有它（fish
+    # 登录 shell 自己重排的 PATH 就没有——2026-09-11 远端原生构建装完就"找不到
+    # sigflow-cli"）。本进程补上，图例起的守护进程也继承这条 PATH。
+    [ "$1" != macos ] || { PATH="/usr/local/bin:$PATH"; export PATH; }
     hash -r
     command -v sigflow-cli >/dev/null || die "安装后找不到 sigflow-cli"
     note "sigflow-cli => $(command -v sigflow-cli)"
@@ -494,7 +544,12 @@ deploy_remote() {
         esac
     fi
     rc=0
-    raw="$(ssh_do "sh -c 'echo __P0__; uname -m; . /etc/os-release 2>/dev/null; echo \${ID:-unknown}:\${ID_LIKE:-}; echo __P1__'")" || rc=$?
+    # `. /etc/os-release` 必须先测存在：POSIX 模式的 sh（macOS 的 /bin/sh 就是）
+    # 点源一个不存在的文件会**直接退出**非交互 shell——__P1__ 印不出来，标记段
+    # 掐头去尾之后是空的，于是 Mac 被判成"连 sh 都没有"，一路走到 Git Bash 那
+    # 条错误提示（2026-09-11 部署到 Mac 撞上的）。Linux 永远有这个文件，所以
+    # 以前没露。第二行报内核名：Darwin 走另一条路（源码同步 + 远端原生构建）。
+    raw="$(ssh_do "sh -c 'echo __P0__; uname -m; uname -s; [ -r /etc/os-release ] && . /etc/os-release; echo \${ID:-unknown}:\${ID_LIKE:-}; echo __P1__'")" || rc=$?
     [ "$rc" != 255 ] || die "ssh 连接失败（root 密码登录被拒时用 --user <用户名>，脚本会走 sudo）"
     probe="$(echo "$raw" | tr -d '\r' | sed -n '/^__P0__$/,/^__P1__$/p' | sed '1d;$d')"
     local RBASH=""
@@ -504,16 +559,21 @@ deploy_remote() {
         # 用 PATH 上的 bash.exe——System32 那个是 WSL 入口，环境完全不同。
         # 探测输出沿用同款标记格式，成功即拿到 arch 并烙上 windows 记号。
         RBASH="${SIGFLOW_REMOTE_BASH:-C:\\Program Files\\Git\\bin\\bash.exe}"
-        raw="$(ssh_do "\"$RBASH\" -c \"echo __P0__; uname -m; echo windows:gitbash; echo __P1__\"")" || true
+        raw="$(ssh_do "\"$RBASH\" -c \"echo __P0__; uname -m; uname -s; echo windows:gitbash; echo __P1__\"")" || true
         probe="$(echo "$raw" | tr -d '\r' | sed -n '/^__P0__$/,/^__P1__$/p' | sed '1d;$d')"
         [ -n "$probe" ] || die "远端既无 POSIX sh 也没探到 Git Bash（$RBASH）——
     Windows 目标需装 Git for Windows（非标准路径用
     SIGFLOW_REMOTE_BASH=<bash.exe 全路径> 指定）；或在目标机上
     Git Bash 里本地部署（install.sh + redeploy.sh）"
     fi
-    local rarch rdistro
+    local rarch rkernel rdistro
     rarch="$(echo "$probe" | sed -n 1p)"
-    rdistro="$(echo "$probe" | sed -n 2p)"
+    rkernel="$(echo "$probe" | sed -n 2p)"
+    rdistro="$(echo "$probe" | sed -n 3p)"
+    if [ "$rkernel" = Darwin ]; then
+        deploy_remote_darwin "$rarch"
+        return
+    fi
     local target pkgkind
     case "$rdistro" in
         windows:*)                  pkgkind=windows ;;
@@ -650,13 +710,7 @@ deploy_remote() {
     cp "$0" "$stage/deploy/redeploy.sh"
     cp "$GRAPH_SCRIPT" "$stage/deploy/graph.sh"
 
-    local envfwd="" v
-    for v in "${FORWARD_VARS[@]}"; do
-        # 未设的变量不转发（图例脚本自带默认）
-        [ -n "${!v:-}" ] && envfwd+="$v='${!v}' "
-    done
-    [ -n "${DATA_ROOT_SET:-}" ] && envfwd+="DATA_ROOT='$DATA_ROOT' "
-    [ -n "${PYTHON:-}" ] && envfwd+="PYTHON='$PYTHON' "
+    local envfwd; envfwd="$(forward_env_string)"
 
     # windows：phase-remote 启动器随船（env 前缀在此烘焙，绕开 ssh→cmd→
     # bash→powershell 的多层引号转义）。经 Start-Process 分离启动，rc 落
@@ -721,6 +775,60 @@ EOF
 
     printf '\n\033[1;32m远程部署完成：%s（%s/%s，图例：%s）\033[0m\n' \
         "$RHOST" "$rarch" "$pkgkind" "$(basename "$GRAPH_SCRIPT")"
+    printf '编辑器：http://%s:%s/\n' "$RHOST" "$SIGFLOW_ROOT_PORT"
+}
+
+# ============================================================================
+# macOS 远端：源码同步 + 远端原生构建。Apple SDK / pkgbuild 只在 Mac 上有，
+# 本机没法交叉编译；Mac 自己有 cargo + node + pkgbuild，就把源码送过去、在它
+# 上面跑本脚本的本地模式（deploy_local：打包装核心 → 编插件 → 建图起流）。
+# ============================================================================
+deploy_remote_darwin() {  # $1 = 远端 uname -m（arm64 / x86_64）
+    local rarch="$1"
+    command -v rsync >/dev/null || die "macOS 远端需要本机 rsync"
+    # sigflow-core 的 Cargo.toml 按 ../sigflow/… 路径依赖公共仓库（项目仓库的
+    # [patch] 同理）：远端布局必须复刻本机三兄弟的目录名，放在同一个根下
+    local rroot="sigflow-deploy-$RUSER/src"   # 相对远端家目录
+    local pub_b core_b proj_b=""
+    pub_b="$(basename "$PUBLIC_DIR")"
+    core_b="$(basename "$CORE_DIR")"
+    [ -z "$PROJECT_DIR" ] || proj_b="$(basename "$PROJECT_DIR")"
+    if [ "$pub_b" = "$core_b" ] || [ "$pub_b" = "$proj_b" ] || [ "$core_b" = "$proj_b" ]; then
+        die "三个仓库的目录名有重复（$pub_b / $core_b / ${proj_b:-无}），远端复刻不了这个布局"
+    fi
+    # 图例按它在本机哪棵树里，映射到远端同一相对路径（远端 cwd = 公共仓库根）
+    local rgraph
+    if [ "${GRAPH_SCRIPT#"$PUBLIC_DIR"/}" != "$GRAPH_SCRIPT" ]; then
+        rgraph="${GRAPH_SCRIPT#"$PUBLIC_DIR"/}"
+    elif [ -n "$PROJECT_DIR" ] && [ "${GRAPH_SCRIPT#"$PROJECT_DIR"/}" != "$GRAPH_SCRIPT" ]; then
+        rgraph="../$proj_b/${GRAPH_SCRIPT#"$PROJECT_DIR"/}"
+    else
+        die "图例 $GRAPH_SCRIPT 不在公共仓库 / 项目仓库里——macOS 远端只在同步过去的源码树里找图例"
+    fi
+    note "远端：$rarch / Darwin → 源码同步到 ~/$rroot，在 Mac 上原生构建（cargo + npm + pkgbuild）"
+
+    step "同步源码 → $RUSER@$RHOST:~/$rroot"
+    # 排除构建产物（远端自己攒 target/ node_modules/，增量构建）与素材（示波器
+    # 音乐那几百兆 wav，图例按 WAV=<目标机路径> 找）；.git 带上——包版本号来自
+    # git describe。
+    local ex=(--exclude=target/ --exclude=node_modules/ --exclude=dist/ --exclude=pkg/
+              --exclude=__pycache__/ --exclude='*.wav' --exclude='*.flac' --exclude='*.mp3'
+              --exclude='*.aiff' --exclude='*.ogg')
+    ssh_do "sh -c 'mkdir -p ~/$rroot'"
+    rsync_do "$PUBLIC_DIR/" "$rroot/$pub_b/" "${ex[@]}"
+    rsync_do "$CORE_DIR/" "$rroot/$core_b/" "${ex[@]}"
+    [ -z "$PROJECT_DIR" ] || rsync_do "$PROJECT_DIR/" "$rroot/$proj_b/" "${ex[@]}"
+
+    step "远端原生构建并部署（Mac 上跑本脚本的本地模式）"
+    local envfwd; envfwd="$(forward_env_string)"
+    local proj_env=""
+    [ -z "$proj_b" ] || proj_env="SIGFLOW_PROJECT_DIR=../$proj_b "
+    # 登录 shell 可能是 fish：包 sh -c，~ 由 sh 展开（双引号里 fish 不碰它）。
+    # 三个目录按相对 cwd 传，脚本自己规范成绝对路径。
+    ssh_do "sh -c \"cd ~/$rroot/$pub_b && $envfwd PASSWD='$PASSWD' SIGFLOW_CORE_DIR=../$core_b ${proj_env}bash deploy/redeploy.sh --graph '$rgraph'\""
+
+    printf '\n\033[1;32m远程部署完成：%s（%s/macos，图例：%s）\033[0m\n' \
+        "$RHOST" "$rarch" "$(basename "$GRAPH_SCRIPT")"
     printf '编辑器：http://%s:%s/\n' "$RHOST" "$SIGFLOW_ROOT_PORT"
 }
 
