@@ -620,24 +620,43 @@ deploy_remote() {
         *)      ( cd "$CORE_DIR" && cross build --release --target "$target" -p sigflow-shell -p sigflow-cli ) ;;
     esac
 
-    step "交叉编译 native 插件（公共侧 + 项目侧 workspace）"
+    step "交叉编译 native 插件（只编图例要的：公共侧 + 项目侧）"
+    # 只编 NATIVE_PLUGINS 里的 crate，装船也只装这些。原来两侧各 --workspace
+    # 一把梭：任一兄弟插件的系统依赖在交叉环境里缺失就把整次部署拦下——
+    # 2026-09-15 wav-source 加 cpal 出声，cross 容器里没有 alsa.pc，与它
+    # 无关的 csx 图部署跟着挂。crate 名从各插件 Cargo.toml 读，与装船那步
+    # 推 lib 文件名的取法同源。
+    local _bpub=() _bprj=() _bp _bpd _bcrate
+    for _bp in "${NATIVE_PLUGINS[@]:+${NATIVE_PLUGINS[@]}}"; do
+        _bpd="$(plugin_dir native "$_bp")"
+        _bcrate="$(sed -n 's/^name = "\(.*\)"/\1/p' "$_bpd/Cargo.toml" | head -1)"
+        [ -n "$_bcrate" ] || die "读不到 crate 名：$_bpd/Cargo.toml"
+        case "$_bpd" in
+            "$PUBLIC_DIR/"*) _bpub+=(-p "$_bcrate") ;;
+            *)               _bprj+=(-p "$_bcrate") ;;
+        esac
+    done
     if [ "$pkgkind" = windows ]; then
         # mingw 直出，路径依赖原生解析，无需 cross 容器与 SIGFLOW_SIBLING
-        ( cd "$PUBLIC_DIR" && CARGO_TARGET_DIR="$PUBLIC_DIR/target/xdeploy" \
-            env "$mingw_lnk" cargo build --release --target "$target" --workspace )
-        if [ -n "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/Cargo.toml" ]; then
+        if [ "${#_bpub[@]}" -gt 0 ]; then
+            ( cd "$PUBLIC_DIR" && CARGO_TARGET_DIR="$PUBLIC_DIR/target/xdeploy" \
+                env "$mingw_lnk" cargo build --release --target "$target" "${_bpub[@]}" )
+        fi
+        if [ "${#_bprj[@]}" -gt 0 ]; then
             ( cd "$PROJECT_DIR" && CARGO_TARGET_DIR="$PROJECT_DIR/target/xdeploy" \
-                env "$mingw_lnk" cargo build --release --target "$target" --workspace )
+                env "$mingw_lnk" cargo build --release --target "$target" "${_bprj[@]}" )
         fi
     else
-        ( cd "$PUBLIC_DIR" && CARGO_TARGET_DIR="$PUBLIC_DIR/target/xdeploy" \
-            cross build --release --target "$target" --workspace )
-        if [ -n "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/Cargo.toml" ]; then
+        if [ "${#_bpub[@]}" -gt 0 ]; then
+            ( cd "$PUBLIC_DIR" && CARGO_TARGET_DIR="$PUBLIC_DIR/target/xdeploy" \
+                cross build --release --target "$target" "${_bpub[@]}" )
+        fi
+        if [ "${#_bprj[@]}" -gt 0 ]; then
             # SIGFLOW_SIBLING：项目仓库的 Cross.toml 把 sigflow 挂进容
             # 器，其 [patch] 的 ../sigflow 路径依赖才解析得到
             ( cd "$PROJECT_DIR" && SIGFLOW_SIBLING="$PUBLIC_DIR" \
                 CARGO_TARGET_DIR="$PROJECT_DIR/target/xdeploy" \
-                cross build --release --target "$target" --workspace )
+                cross build --release --target "$target" "${_bprj[@]}" )
         fi
     fi
 
