@@ -26,7 +26,12 @@
 # 过去。Windows 目标写 Git Bash 形式（/c/Users/…），不是 WSL 的 /mnt/c/…：
 #   WAV=/c/Users/me/primer-final.wav ./deploy/redeploy.sh oscilloscope-music --host H --passwd P --user U
 #
-# 前提：sigflow-cli 在 PATH，wav-source 已 `sigflow-cli plugin install`。
+# 前提：sigflow-cli 在 PATH，wav-source 已 `sigflow-cli plugin install`；脸上的播放条
+# 和音量滑块要两个控件包（没装就跳过，示波器照常）：
+#   sigflow-cli plugin install plugins/ui/transport
+#   sigflow-cli plugin install plugins/ui/slider
+# 声音走系统默认输出设备（cpal）。没声卡的机器（远程部署的船上常见）画面照常，
+# 播放条上写"设备打不开"——那是 transport 口 audio 列的出口，不是坏了。
 # POSIX sh；参数走环境变量：
 #   WAV       WAV 文件路径    （默认 example/oscilloscope-music-res/primer-final.wav）
 #   NODE_DIR  节点目录        （默认 /tmp/sigflow-osc-music）
@@ -126,6 +131,25 @@ sigflow-cli --node music widget add sigflow.ui.oscilloscope@0.1.0 xy \
     --layout "8,8,384,40" --config "label=示波器音乐（X-Y）"
 sigflow-cli --node music widget bind xy port:audio --scope-file "$NODE_DIR/scope/xy.toml"
 
+# ---- 脸上的播放条 + 音量 -------------------------------------------------------
+# 示波器整页开在浮窗里，脸上的这几个一直看得见。播放条绑 **transport 口**（不是
+# 参数）：进度从口读——位置 / 时长 / 播放态 / 出声态，20 Hz 一拍；原生插件的参数
+# 只能被写、不能自己改，"现在放到哪了"只有口能带出来。拖完写 seek_s、▶/⏸ 写
+# playing、⏮ 按 restart，都是 wav_source 的 id，控件的缺省就是它们。
+step "播放条 + 音量"
+if sigflow-cli --node music widget add sigflow.ui.transport@0.1.0 bar \
+    --layout "8,56,384,52" 2>/dev/null; then
+    sigflow-cli --node music widget bind bar port:transport
+else
+    printf '  （没装 sigflow.ui.transport，脸上没有播放条：sigflow-cli plugin install plugins/ui/transport）\n'
+fi
+if sigflow-cli --node music widget add sigflow.ui.slider@0.1.0 vol \
+    --layout "8,116,384,44" --config "label=音量" 2>/dev/null; then
+    sigflow-cli --node music widget bind vol param:volume
+else
+    printf '  （没装 sigflow.ui.slider，脸上没有音量滑块：sigflow-cli plugin install plugins/ui/slider）\n'
+fi
+
 # **节点在画布上的显示密度**——不设这一行，浏览器里只有一张 node 卡片，整页控件的
 # 入口根本不出现，看起来像"控件没装上"。整页控件必须配 `--display face`。
 # （`--pos` 是必填的；`--size` 是脸的尺寸，给大一点，X-Y 画在正方形里。）
@@ -153,12 +177,20 @@ cat <<'TXT'
     3. 一团糊、不像画 → 一屏太长了。X-Y 只在一屏拿得到原始样本时才是轨迹；
        把 SPAN 调回 1024。
 
-  能拧的（照抄就能跑）：
+  能拧的（照抄就能跑；脸上的播放条 / 音量滑块拧的是同一批）：
     sigflow-cli --node music param set gain 2          画太小就往上拧（超过 1 会削顶）
-    sigflow-cli --node music param set speed 0.25      慢放看轨迹怎么走出来的
+    sigflow-cli --node music param set speed 0.25      慢放看轨迹怎么走出来的（音调跟着降）
     sigflow-cli --node music param set loop_play false 放完就停，不循环
     sigflow-cli --node music param set loop_play true  停了之后打开循环 = 接着放
     sigflow-cli --node music action invoke restart     从头播
+    sigflow-cli --node music param set playing false   暂停（true 继续；放完之后 true = 从头播）
+    sigflow-cli --node music param set seek_s 30       跳到第 30 秒（写入即跳；实时位置看 transport 口）
+    sigflow-cli --node music param set volume 0.5      音量（只管声音，不动画面；gain 才动画面）
+    sigflow-cli --node music param set audio false     不出声
+
+  没声音：先看播放条右上角的出声态——"设备打不开"是 transport 口 audio 列报的，
+  多半是这台机器没有默认输出设备（远程部署的船上常见）；画面照常，这不是坏了。
+  节点日志里有设备名和率（"出声 → xxx（设备 48000 Hz，文件 192000 Hz）"）。
 
   没有余辉——真机的拖影是示波器音乐好看的一半，我们还没做（X-Y 平面上要另开一张
   累积网格）。所以现在看到的是单帧线条，比真机干净、也比真机冷清。
