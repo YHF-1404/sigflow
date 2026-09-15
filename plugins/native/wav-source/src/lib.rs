@@ -1,4 +1,4 @@
-//! wav-source —— 把一个 stereo WAV 播成两列的口（`l` / `r`）。
+//! wav-source —— 把一个 stereo WAV 播成两列的口（`l` / `r`），并出声。
 //!
 //! 为什么存在：**示波器音乐**——两路音频驱动示波器的 X-Y，屏上是画不是波形。
 //! `example/oscilloscope-music.sh` 用它放 Primer（Revision 2025 Wild 冠军）。
@@ -23,6 +23,19 @@
 //! `sample_index` / `t0_ns` 是真时间。整个 data 段读进内存后**按帧解码**，所以内存
 //! ≈ 文件大小，而不是解码后的 f32 大小。
 //!
+//! 2026-09-11 为示波器音乐例子加的三件（进度条、暂停 / 继续、声音）：
+//!
+//! 4. **进度走数据面**：第二个口 `transport`（20 Hz，4 列：位置 / 时长 / 播放态 /
+//!    出声态）。原生插件的参数只能被写、不能自己改，"现在放到哪了"没有别的出口
+//!    ——那就开一个。暂停 / 放完时它照发：进度条要知道停在哪。
+//! 5. **暂停是 bool 参数 `playing`，跳转是命令参数 `seek_s`**。再播时重新锚定并带
+//!    一次不连续标记——暂停期间墙钟走了、拍没出，采样轴真的断了（同改 speed）；
+//!    跳转**不**带，断的是内容不是轴（同第 3 条循环回头）。放完之后再按播放 = 从头
+//!    播：按钮按下去得有动静，否则人只会以为坏了（同 `loop_play` 那笔账）。
+//! 6. **出声是旁路不是时钟**（`audio.rs`）：口的节奏还是墙钟，声音从环里跟着取。
+//!    打不开设备不 Fault、只在 transport 口的 `audio` 列报 2，画面照常——画才是主
+//!    产品。`volume` 与 `gain` 分开：gain 是画面的，削顶是画面的事。
+//!
 //! 契约在同目录的 `manifest.toml`。
 
 use sigflow_plugin_sdk::{
@@ -31,10 +44,25 @@ use sigflow_plugin_sdk::{
 };
 use sigflow_types::frame::RATE_ANNOTATION_SCHEMA;
 
+mod audio;
+use audio::AudioOut;
+
 /// 口是两列，静态声明。
 const CHANNELS: usize = 2;
 /// 帧尾留给 sfrate01 注解的字节。
 const ANNOTATION_RESERVE: usize = 64;
+/// transport 口：多久发一拍（manifest 声明 20 Hz）。
+const TRANSPORT_PERIOD_NS: i64 = 50_000_000;
+/// transport 口的列：pos_s / dur_s / state / audio。
+const TRANSPORT_COLS: usize = 4;
+/// `state` 列的取值——sigflow.ui.transport 按值判，不按名字。
+const STATE_PAUSED: f32 = 0.0;
+const STATE_PLAYING: f32 = 1.0;
+const STATE_FINISHED: f32 = 2.0;
+/// `audio` 列的取值。
+const AUDIO_OFF: f32 = 0.0;
+const AUDIO_ON: f32 = 1.0;
+const AUDIO_NO_DEVICE: f32 = 2.0;
 
 /// data 段里一个样本的存法。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,9 +88,7 @@ impl Enc {
         match self {
             Enc::I16 => i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0,
             // 24 位：补最低字节再当 i32 读，右移回去 = 符号扩展
-            Enc::I24 => {
-                (i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8) as f32 / 8_388_608.0
-            }
+            Enc::I24 => (i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8) as f32 / 8_388_608.0,
             Enc::I32 => i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / 2_147_483_648.0,
             Enc::F32 => f32::from_le_bytes([b[0], b[1], b[2], b[3]]),
         }
@@ -109,8 +135,9 @@ impl Wav {
 
     fn parse(raw: &[u8]) -> Result<Wav, String> {
         if raw.len() < 12 || &raw[0..4] != b"RIFF" || &raw[8..12] != b"WAVE" {
-            return Err("不是 RIFF/WAVE 文件（要 WAV；FLAC/MP3 先转：ffmpeg -i 输入 输出.wav）"
-                .to_string());
+            return Err(
+                "不是 RIFF/WAVE 文件（要 WAV；FLAC/MP3 先转：ffmpeg -i 输入 输出.wav）".to_string(),
+            );
         }
         let mut fmt: Option<(u16, u16, u32, u16)> = None; // (format, channels, fs, bits)
         let mut data: Option<(usize, usize)> = None; // (start, len)
@@ -152,8 +179,12 @@ impl Wav {
             (3, 32) => Enc::F32,
             (1, b) => return Err(format!("不认识的位深 {b}（PCM 只认 16 / 24 / 32）")),
             (3, b) => return Err(format!("浮点 WAV 只认 32 位，这个是 {b}")),
-            (f, b) => return Err(format!("不认识的编码（format = {f}, bits = {b}）；\
-                                          压缩过的先转：ffmpeg -i 输入 输出.wav")),
+            (f, b) => {
+                return Err(format!(
+                    "不认识的编码（format = {f}, bits = {b}）；\
+                                          压缩过的先转：ffmpeg -i 输入 输出.wav"
+                ))
+            }
         };
         if !(fs > 0) {
             return Err("采样率是 0".to_string());
@@ -185,6 +216,10 @@ pub struct WavSource {
     loop_play: bool,
     gain: f64,
     speed: f64,
+    /// 关 = 暂停。
+    playing: bool,
+    audio_on: bool,
+    volume: f64,
 
     wav: Option<Wav>,
     /// 加载失败的原因——留到 `start()` 报，参数是热改的，改错了不该当场把节点弄死。
@@ -193,6 +228,8 @@ pub struct WavSource {
     reload: bool,
     /// 放完了（不循环）——只报一次。
     finished: bool,
+    /// 在 Running 态（`start()` 到 `stop()` 之间）——出声设备只在这期间开着。
+    running: bool,
 
     seq: u64,
     /// 已发的拍数（输出轴，只增）。
@@ -204,6 +241,15 @@ pub struct WavSource {
     fs_out: f64,
     pending_disc: bool,
     rate_annotation: Vec<u8>,
+
+    /// 打开的输出设备；None = 关着 / 打不开。
+    audio: Option<AudioOut>,
+    /// 打不开的原话——只在变化时打一次日志，transport 口每拍报态。
+    audio_err: Option<String>,
+    /// 推给声卡的那一段（原始值，不吃 gain），复用免得每 tick 分配。
+    audio_buf: Vec<f32>,
+    transport_seq: u64,
+    transport_last_ns: i64,
 }
 
 impl WavSource {
@@ -229,6 +275,14 @@ impl WavSource {
         self.retune();
     }
 
+    /// 采样轴断了（率变了 / 暂停后再播）：输出轴重新锚定，下一帧带不连续标记。
+    /// 锚在"此刻"，所以不会一口气补发暂停期间"该有"的拍。
+    fn reanchor(&mut self) {
+        self.anchor_index = self.index;
+        self.anchor_t0_ns = mono_ns();
+        self.pending_disc = true;
+    }
+
     /// 率变了 = 新的采样轴：重新锚定，下一帧带不连续标记。
     fn retune(&mut self) {
         let fs = self.wav.as_ref().map(|w| w.fs_hz).unwrap_or(0.0) * self.speed;
@@ -236,10 +290,54 @@ impl WavSource {
             return;
         }
         self.fs_out = fs;
-        self.anchor_index = self.index;
-        self.anchor_t0_ns = mono_ns();
-        self.pending_disc = true;
+        self.reanchor();
         self.rate_annotation = encode_rate_annotation(fs);
+        if let Some(a) = &self.audio {
+            a.set_source_rate(fs);
+        }
+    }
+
+    /// 跳到第几秒：读头动、输出轴不动、**不带**不连续标记——断的是内容，采样轴
+    /// 一拍没丢（同循环回头 / restart）。越过文件尾按尾算；放完了的闩也解开。
+    fn seek(&mut self, sec: f64) {
+        let Some(w) = self.wav.as_ref() else {
+            return;
+        };
+        let f = (sec.max(0.0) * w.fs_hz) as u64;
+        self.cursor = f.min(w.frames.saturating_sub(1));
+        self.finished = false;
+        if let Some(a) = &self.audio {
+            a.flush();
+        }
+    }
+
+    /// 开（或重开）输出设备。打不开**不 Fault**：画面照常，transport 口的 audio 列报 2。
+    fn open_audio(&mut self) {
+        self.audio = None;
+        if !self.audio_on {
+            return;
+        }
+        let Some(w) = self.wav.as_ref() else {
+            return;
+        };
+        match AudioOut::open(w.fs_hz) {
+            Ok(a) => {
+                a.set_source_rate(self.fs_out);
+                a.set_volume(self.volume as f32);
+                eprintln!(
+                    "wav_source: 出声 → {}（设备 {} Hz，文件 {} Hz）",
+                    a.device_name, a.device_rate_hz, w.fs_hz
+                );
+                self.audio_err = None;
+                self.audio = Some(a);
+            }
+            Err(e) => {
+                if self.audio_err.as_deref() != Some(e.as_str()) {
+                    eprintln!("wav_source: 出不了声（画面照常）：{e}");
+                }
+                self.audio_err = Some(e);
+            }
+        }
     }
 
     fn fill(&mut self, buf: &mut [u8], scans: usize) -> usize {
@@ -269,10 +367,14 @@ impl Plugin for WavSource {
             loop_play: true,
             gain: 1.0,
             speed: 1.0,
+            playing: true,
+            audio_on: true,
+            volume: 0.8,
             wav: None,
             load_err: None,
             reload: false,
             finished: false,
+            running: false,
             seq: 0,
             index: 0,
             cursor: 0,
@@ -281,6 +383,11 @@ impl Plugin for WavSource {
             fs_out: 0.0,
             pending_disc: false,
             rate_annotation: Vec::new(),
+            audio: None,
+            audio_err: None,
+            audio_buf: Vec::new(),
+            transport_seq: 0,
+            transport_last_ns: 0,
         }
     }
 
@@ -308,6 +415,35 @@ impl Plugin for WavSource {
                     self.retune();
                 }
             }
+            ("playing", ParamValue::Bool(b)) => {
+                if *b != self.playing {
+                    self.playing = *b;
+                    if *b {
+                        // 放完之后再按播放 = 从头播（按钮按下去得有动静）
+                        if self.finished {
+                            self.cursor = 0;
+                            self.finished = false;
+                        }
+                        // 暂停期间墙钟走了、拍没出：采样轴断了，重新锚定
+                        self.reanchor();
+                    }
+                }
+            }
+            ("seek_s", ParamValue::F64(v)) => self.seek(*v),
+            ("audio", ParamValue::Bool(b)) => {
+                if *b != self.audio_on {
+                    self.audio_on = *b;
+                    if self.running {
+                        self.open_audio();
+                    }
+                }
+            }
+            ("volume", ParamValue::F64(v)) => {
+                self.volume = v.clamp(0.0, 1.0);
+                if let Some(a) = &self.audio {
+                    a.set_volume(self.volume as f32);
+                }
+            }
             _ => {}
         }
     }
@@ -318,6 +454,8 @@ impl Plugin for WavSource {
         self.seq = 0;
         self.anchor_index = 0;
         self.anchor_t0_ns = mono_ns();
+        self.transport_seq = 0;
+        self.transport_last_ns = 0;
         // 加载失败在这里报：这时候人正按下 Run，看得见
         if let Some(e) = &self.load_err {
             return ProcessOutcome::Fault { reason: e.clone() };
@@ -327,7 +465,25 @@ impl Plugin for WavSource {
             self.rate_annotation = encode_rate_annotation(self.fs_out);
         }
         self.pending_disc = false;
+        self.running = true;
+        self.open_audio();
         ProcessOutcome::Ok
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+        // 丢掉流 = 停：不 Running 就不该占着设备。欠载数顺手报一下——暂停 / 跳转
+        // 都会攒几拍，量级大了才说明引擎供不上。
+        if let Some(a) = self.audio.take() {
+            let n = a.underruns();
+            if n > 0 {
+                eprintln!("wav_source: 出声欠载 {n} 拍（暂停 / 跳转时正常；一直涨才是供不上）");
+            }
+        }
+    }
+
+    fn shutdown(&mut self) {
+        self.audio = None;
     }
 
     fn process(&mut self, _inputs: &[Frame], outputs: &mut [FrameOut]) -> ProcessOutcome {
@@ -339,16 +495,47 @@ impl Plugin for WavSource {
             if let Some(w) = &self.wav {
                 self.fs_out = w.fs_hz * self.speed;
                 self.rate_annotation = encode_rate_annotation(self.fs_out);
-                self.anchor_index = self.index;
-                self.anchor_t0_ns = mono_ns();
-                self.pending_disc = true;
+                self.reanchor();
+            }
+            // 换了文件率可能变了：设备按文件的率开，重开
+            if self.running {
+                self.open_audio();
             }
         }
-        let (Some(out), Some(w)) = (outputs.get_mut(0), self.wav.as_ref()) else {
+        if self.wav.is_none() {
             return ProcessOutcome::Ok;
+        }
+        if let Some(out) = outputs.get_mut(0) {
+            self.emit_audio(out);
+        }
+        // 暂停 / 放完时照发：进度条要知道停在哪
+        if let Some(out) = outputs.get_mut(1) {
+            self.emit_transport(out);
+        }
+        ProcessOutcome::Ok
+    }
+
+    fn invoke_action(&mut self, id: &str) {
+        if id == "restart" {
+            // 读头回到开头，但**输出轴不回退**：seq / sample_index 只增，
+            // 否则下游会被告知时间倒流了。
+            self.cursor = 0;
+            self.finished = false;
+            if let Some(a) = &self.audio {
+                a.flush();
+            }
+        }
+    }
+}
+
+impl WavSource {
+    /// 音频口：按墙钟把"此刻该存在"的拍发出去，同一段拍推给声卡。
+    fn emit_audio(&mut self, out: &mut FrameOut) {
+        let Some(w) = self.wav.as_ref() else {
+            return;
         };
-        if self.finished || self.fs_out <= 0.0 {
-            return ProcessOutcome::Ok;
+        if !self.playing || self.finished || self.fs_out <= 0.0 {
+            return;
         }
         let frames_total = w.frames;
         let cap = out.capacity().saturating_sub(ANNOTATION_RESERVE) / (CHANNELS * 4);
@@ -363,7 +550,7 @@ impl Plugin for WavSource {
             if !self.loop_play && self.cursor >= frames_total {
                 self.finished = true;
             }
-            return ProcessOutcome::Ok;
+            return;
         }
 
         let (index, seq, anchor_index, anchor_t0_ns, fs, disc) = (
@@ -378,12 +565,24 @@ impl Plugin for WavSource {
             let buf = out.buffer_mut();
             self.fill(buf, scans)
         };
+        // 出声：同一段拍的**原始值**（不吃 gain——那是画面的），音量在回调里乘
+        if let Some(a) = self.audio.as_ref() {
+            let w = self.wav.as_ref().expect("上面刚查过");
+            let buf = &mut self.audio_buf;
+            buf.clear();
+            for s in 0..scans {
+                let f = (self.cursor + s as u64) % frames_total;
+                for ch in 0..CHANNELS {
+                    buf.push(w.at(f, ch));
+                }
+            }
+            a.push(buf, self.fs_out);
+        }
         out.set_written(written);
         out.header.seq = seq;
         out.header.sample_index = index;
         out.header.n_samples = scans as u32;
-        out.header.t0_ns =
-            anchor_t0_ns + (((index - anchor_index) as f64 / fs) * 1e9) as i64;
+        out.header.t0_ns = anchor_t0_ns + (((index - anchor_index) as f64 / fs) * 1e9) as i64;
         // 循环回到开头**不设**不连续标记：时间连着走、一拍没丢，断的是内容不是采样轴。
         if disc {
             out.header.set_discontinuity(0);
@@ -392,7 +591,7 @@ impl Plugin for WavSource {
         if !out.set_annotation(RATE_ANNOTATION_SCHEMA, &self.rate_annotation) {
             // 只有容量算错才会到这里；率注解是契约的一部分，宁可这一帧不发
             out.set_written(0);
-            return ProcessOutcome::Ok;
+            return;
         }
         self.seq += 1;
         self.index += scans as u64;
@@ -406,16 +605,52 @@ impl Plugin for WavSource {
         } else {
             next.min(frames_total)
         };
-        ProcessOutcome::Ok
     }
 
-    fn invoke_action(&mut self, id: &str) {
-        if id == "restart" {
-            // 读头回到开头，但**输出轴不回退**：seq / sample_index 只增，
-            // 否则下游会被告知时间倒流了。
-            self.cursor = 0;
-            self.finished = false;
+    /// transport 口：每 50 ms 一拍 [pos_s, dur_s, state, audio]。位置按文件秒算
+    /// （不吃 speed：进度条量的是文件，不是墙钟）。
+    fn emit_transport(&mut self, out: &mut FrameOut) {
+        let now = mono_ns();
+        if self.transport_seq > 0 && now - self.transport_last_ns < TRANSPORT_PERIOD_NS {
+            return;
         }
+        let Some(w) = self.wav.as_ref() else {
+            return;
+        };
+        let state = if self.finished {
+            STATE_FINISHED
+        } else if self.playing {
+            STATE_PLAYING
+        } else {
+            STATE_PAUSED
+        };
+        let audio = if !self.audio_on {
+            AUDIO_OFF
+        } else if self.audio.is_some() {
+            AUDIO_ON
+        } else {
+            AUDIO_NO_DEVICE
+        };
+        let vals: [f32; TRANSPORT_COLS] = [
+            (self.cursor as f64 / w.fs_hz) as f32,
+            (w.frames as f64 / w.fs_hz) as f32,
+            state,
+            audio,
+        ];
+        let buf = out.buffer_mut();
+        if buf.len() < TRANSPORT_COLS * 4 {
+            return;
+        }
+        for (i, v) in vals.iter().enumerate() {
+            buf[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        out.set_written(TRANSPORT_COLS * 4);
+        out.header.seq = self.transport_seq;
+        out.header.sample_index = self.transport_seq;
+        out.header.n_samples = 1;
+        out.header.t0_ns = now;
+        self.transport_seq += 1;
+        self.transport_last_ns = now;
     }
 }
 
@@ -554,10 +789,120 @@ mod tests {
         let mut p = WavSource::new(&manifest());
         p.wav = Some(Wav::parse(&wav(1, 16, 2, fs, &body)).unwrap());
         p.loop_play = loop_play;
+        p.audio_on = false; // 单测不开声卡
         p.fs_out = fs as f64;
         p.rate_annotation = encode_rate_annotation(fs as f64);
         p.anchor_t0_ns = mono_ns();
         p
+    }
+
+    /// 两个口一起跑：返回 (音频口总拍数, 第一帧音频带没带不连续标记, 最后一拍 transport)。
+    fn drain2(p: &mut WavSource, calls: usize) -> (u64, Option<bool>, Option<[f32; 4]>) {
+        let mut abuf = vec![0u8; 64 * 1024];
+        let mut tbuf = vec![0u8; 256];
+        let mut total = 0u64;
+        let mut first_disc = None;
+        let mut transport = None;
+        for _ in 0..calls {
+            p.anchor_t0_ns -= 1_000_000_000;
+            p.transport_last_ns -= TRANSPORT_PERIOD_NS; // 让 transport 每次都到点
+            let mut outs = [FrameOut::new(&mut abuf), FrameOut::new(&mut tbuf)];
+            p.process(&[], &mut outs);
+            let n = outs[0].header.n_samples as u64;
+            if n > 0 && first_disc.is_none() {
+                first_disc = Some(outs[0].header.is_discontinuity());
+            }
+            total += n;
+            if outs[1].written() == TRANSPORT_COLS * 4 {
+                let mut v = [0f32; 4];
+                for (i, x) in v.iter_mut().enumerate() {
+                    *x = f32::from_le_bytes(tbuf[i * 4..i * 4 + 4].try_into().unwrap());
+                }
+                transport = Some(v);
+            }
+        }
+        (total, first_disc, transport)
+    }
+
+    #[test]
+    fn 暂停不出拍_transport照发_再播带一次不连续标记() {
+        let mut p = loaded(4000, 8000, true);
+        p.set_param("playing", &ParamValue::Bool(false));
+        let (n, _, t) = drain2(&mut p, 3);
+        assert_eq!(n, 0, "暂停了不该出拍");
+        let t = t.expect("暂停时 transport 也该发——进度条要知道停在哪");
+        assert_eq!(t[2], STATE_PAUSED);
+        assert_eq!(t[3], AUDIO_OFF);
+        assert!((t[1] - 0.5).abs() < 1e-6, "时长 = 4000 / 8000 s：{t:?}");
+
+        p.set_param("playing", &ParamValue::Bool(true));
+        let (n, disc, t) = drain2(&mut p, 3);
+        assert!(n > 0, "再播该出拍");
+        assert_eq!(disc, Some(true), "暂停期间采样轴断了：第一帧该带不连续标记");
+        assert_eq!(t.unwrap()[2], STATE_PLAYING);
+        // 再播不是一口气补发：锚在"此刻"，drain2 每轮推 1 s = 8000 拍，3 轮 ≈ 3 × 8000
+        // （留 0.1 s 给测试本身走掉的墙钟）；补发的话上一段暂停的 3 s 也会出来 ≈ 48000
+        assert!(n <= 3 * 8000 + 800, "不该把暂停期间'该有'的拍补出来：{n}");
+    }
+
+    #[test]
+    fn 跳转移动读头_不带不连续标记_放完了也能跳回去接着放() {
+        let frames = 8000usize;
+        let mut p = loaded(frames, 8000, false);
+        let (a, _, t) = drain2(&mut p, 4);
+        assert_eq!(a, frames as u64);
+        assert!(p.finished);
+        assert_eq!(t.unwrap()[2], STATE_FINISHED);
+
+        p.set_param("seek_s", &ParamValue::F64(0.75));
+        assert!(!p.finished, "跳转该解开放完的闩");
+        assert_eq!(p.cursor, 6000);
+        let (b, disc, t) = drain2(&mut p, 4);
+        assert_eq!(b, 2000, "从 0.75 s 放到尾该恰好 2000 拍");
+        assert_eq!(disc, Some(false), "跳转断的是内容不是采样轴，不带标记");
+        let t = t.unwrap();
+        assert!((t[0] - 1.0).abs() < 1e-6, "放完停在尾：{t:?}");
+
+        // 越过文件尾按尾算，不 panic
+        p.set_param("seek_s", &ParamValue::F64(1e9));
+        assert_eq!(p.cursor, frames as u64 - 1);
+        p.set_param("seek_s", &ParamValue::F64(-3.0));
+        assert_eq!(p.cursor, 0);
+    }
+
+    #[test]
+    fn 放完之后再按播放_从头来() {
+        let frames = 3000usize;
+        let mut p = loaded(frames, 8000, false);
+        let (a, _, _) = drain2(&mut p, 4);
+        assert_eq!(a, frames as u64);
+        p.set_param("playing", &ParamValue::Bool(false));
+        p.set_param("playing", &ParamValue::Bool(true));
+        assert!(!p.finished);
+        assert_eq!(p.cursor, 0);
+        let (b, _, _) = drain2(&mut p, 4);
+        assert_eq!(b, frames as u64, "放完再按播放该再放一整遍");
+    }
+
+    #[test]
+    fn transport帧_位置按文件秒_音量与出声开关不碰画面() {
+        let mut p = loaded(16000, 8000, true);
+        p.set_param("speed", &ParamValue::F64(2.0));
+        p.set_param("volume", &ParamValue::F64(0.3));
+        // 出声开关：没在跑就只记着，不开设备
+        p.set_param("audio", &ParamValue::Bool(true));
+        assert!(p.audio.is_none());
+        let (n, _, t) = drain2(&mut p, 1);
+        assert!(n > 0);
+        let t = t.unwrap();
+        // 位置 = 读头 / 文件率，不吃 speed
+        assert!(
+            (t[0] - p.cursor as f32 / 8000.0).abs() < 1e-4,
+            "{t:?} cursor={}",
+            p.cursor
+        );
+        assert!((t[1] - 2.0).abs() < 1e-6);
+        assert_eq!(t[3], AUDIO_NO_DEVICE, "开关开着、设备没开 → 报 2（有出口）");
     }
 
     #[test]
@@ -639,5 +984,48 @@ mod tests {
             "文件的率是运行期的，不能声明——每帧带 sfrate01"
         );
         assert!(p.validate().is_ok(), "{:?}", p.validate());
+    }
+
+    #[test]
+    fn manifest_的形状_transport口四列_位置的界引用时长列() {
+        use sigflow_types::manifest::{BoundRef, ColumnKind};
+        let m = manifest();
+        let p = &m.ports[1];
+        assert_eq!(p.id, "transport");
+        assert_eq!(p.declared_rate_hz, Some(20.0));
+        assert_eq!(
+            p.max_frame_bytes,
+            Some(256),
+            "小口要声明小帧上限：共享内存按它预留"
+        );
+        let ids: Vec<&str> = p.columns.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["pos_s", "dur_s", "state", "audio"]);
+        assert_eq!(p.columns.len(), TRANSPORT_COLS);
+        let b = p.columns[0].bound.as_ref().expect("pos_s 要有界");
+        assert_eq!(
+            b.max,
+            Some(BoundRef::Column {
+                column: "dur_s".into()
+            })
+        );
+        assert_eq!(p.columns[2].kind, ColumnKind::Enum);
+        let names: Vec<&str> = p.columns[2]
+            .decode
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(
+            p.columns[2]
+                .decode
+                .iter()
+                .map(|c| c.value)
+                .collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        assert_eq!(names.len(), 3);
+        assert!(p.validate().is_ok(), "{:?}", p.validate());
+        for id in ["playing", "seek_s", "audio", "volume"] {
+            assert!(m.parameters.iter().any(|q| q.id == id), "缺参数 {id}");
+        }
     }
 }

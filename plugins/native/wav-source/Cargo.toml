@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 sigflow-types = { path = "../../../crates/sigflow-types" }
 sigflow-plugin-sdk = { path = "../../../sdk/rust" }
+cpal = "0.18"
 
 [dev-dependencies]
 toml = "0.8"
