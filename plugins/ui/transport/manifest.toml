@@ -1,0 +1,60 @@
+# sigflow.ui.transport — 播放条：进度（可拖）+ 播放 / 暂停 + 从头播。
+#
+# 绑一个 producer 口，从它读"放到哪了"：位置列（pos_column）、时长列
+# （dur_column）、播放态列（state_column：0 暂停 / 1 播放 / 2 放完——按值判，
+# 不按名字，名字只做显示）、出声态列（audio_column：0 关 / 1 出声 / 2 设备打
+# 不开）。**进度走数据面而不是参数**：原生插件的参数只能被写、不能自己改，
+# "现在放到哪了"只有口能带出来（sigflow.io.wav_source 的 `transport` 口就是
+# 为它开的）。
+#
+# 反过来"人要它去哪"走参数 / 动作，按名字指到绑定节点上：拖完进度条写
+# seek_param（秒）、播放 / 暂停按钮写 play_param（bool）、从头播按
+# restart_action。三者任一留空 = 那个控制不显示（只看不动的进度条也成立）。
+#
+# 拖的时候条跟手不跟口（口 20 Hz 一拍，跟口会抖回去）；松手写参数之后按住
+# 那个值直到口追上来（或 1.5 s 超时），否则松手那一下条会先跳回旧位置再跳过去。
+# 纯 manifest 包。
+name = "sigflow.ui.transport"
+version = "0.1.0"
+category = "ui_widget"
+
+[runtime]
+type = "native"
+library = "widget.json"
+entry = "unused"
+
+[widget]
+widget_type = "transport"
+bindable_to = [{ kind = "port" }]
+
+[widget.config_schema.label]
+type = "string"
+
+[widget.config_schema.pos_column]
+type = "string"
+default = "pos_s"
+
+[widget.config_schema.dur_column]
+type = "string"
+default = "dur_s"
+
+[widget.config_schema.state_column]
+type = "string"
+default = "state"
+
+[widget.config_schema.audio_column]
+type = "string"
+default = "audio"
+
+# 绑定节点上的参数 / 动作 id。留空 = 不显示那个控制。
+[widget.config_schema.seek_param]
+type = "string"
+default = "seek_s"
+
+[widget.config_schema.play_param]
+type = "string"
+default = "playing"
+
+[widget.config_schema.restart_action]
+type = "string"
+default = "restart"

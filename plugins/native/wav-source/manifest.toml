@@ -22,6 +22,21 @@
 # 出帧节奏按墙钟（同 sig-gen）：每个 tick 只发到"此刻该存在"的样本数，
 # sample_index / t0_ns 是真时间。整个 data 段读进内存后按帧解码（16/24/32 位
 # 整数和 32 位浮点都认），所以内存 ≈ 文件大小。
+#
+# **第二个口 `transport`（20 Hz）是进度条的出口**：位置 / 时长 / 播放态 / 出声态。
+# 插件没有别的路把"现在放到哪了"告诉 UI——原生插件的参数只能被写、不能自己改，
+# 所以进度走数据面，一个 4 列的小口，帧上限 256 字节（共享内存按帧上限预留）。
+# 暂停 / 放完时它照发：进度条要知道停在哪。
+#
+# 暂停 = `playing = false`（bool 参数，不是动作：态要能持久、能被开关控件绑）。
+# 再播时重新锚定并带一次不连续标记——暂停期间墙钟走了、拍没出，采样轴真的断了。
+# 跳转 = 写 `seek_s`（写入即跳，一个命令而不是状态；实时位置看 transport 口）。
+# 跳转 / 循环回头 / 从头播都**不**带不连续标记：断的是内容，采样轴一拍没丢。
+#
+# 出声走系统默认输出设备（cpal：Linux ALSA / macOS CoreAudio / Windows WASAPI）。
+# 声卡不当时钟：口的节奏还是墙钟，声音从一个环里跟着取；打不开设备只在
+# transport 口的 audio 列上报（2 = 设备打不开），画面照常——画才是主产品。
+# `volume` 与 `gain` 分开：gain 是画面的（削顶是画面的事），volume 只管耳朵。
 name = "sigflow.io.wav_source"
 version = "0.1.0"
 category = "compute"
@@ -52,6 +67,49 @@ label = "右 / Y"
 kind = "signal"
 bound = { min = -1.0, max = 1.0 }
 
+# 进度条的出口：20 Hz 一拍，每拍 4 列。位置的界引用同帧的时长列——时长只有
+# 生产方知道（是哪个文件的事），量表 / 进度条按契约就能画满条。
+[[ports]]
+id = "transport"
+direction = "producer"
+semantic_type = { kind = "timeseries.signal", dtype = "f32", clock_domain = "host_monotonic" }
+declared_rate_hz = 20.0
+max_frame_bytes = 256
+
+[[ports.columns]]
+id = "pos_s"
+label = "位置"
+unit = "s"
+kind = "signal"
+bound = { min = 0.0, max = { column = "dur_s" } }
+
+[[ports.columns]]
+id = "dur_s"
+label = "时长"
+unit = "s"
+kind = "signal"
+
+# 0 / 1 / 2 的次序是 sigflow.ui.transport 控件认的约定（它按值而不是按名字判）。
+[[ports.columns]]
+id = "state"
+label = "播放态"
+kind = "enum"
+decode = [
+  { value = 0, name = "暂停", tone = "neutral" },
+  { value = 1, name = "播放", tone = "good" },
+  { value = 2, name = "放完", tone = "off" },
+]
+
+[[ports.columns]]
+id = "audio"
+label = "出声"
+kind = "enum"
+decode = [
+  { value = 0, name = "关", tone = "off" },
+  { value = 1, name = "出声", tone = "good" },
+  { value = 2, name = "设备打不开", tone = "warn" },
+]
+
 [[parameters]]
 id = "path"
 param_type = "string"
@@ -65,6 +123,26 @@ param_type = "bool"
 default = { bool = true }
 hot_change = true
 label = "放完从头再来"
+
+# 暂停 / 继续。放完（不循环）之后再打开 = 从头播——按钮按下去得有动静。
+[[parameters]]
+id = "playing"
+param_type = "bool"
+default = { bool = true }
+hot_change = true
+label = "播放（关 = 暂停）"
+
+# 写入即跳到这个时刻。这是命令不是状态：回读到的是上次写的值，不是现在放到哪
+# ——实时位置在 transport 口的 pos_s 列。上限 86400 只是让范围有个数（文件时长
+# 是运行期才知道的），越过文件尾按尾算。
+[[parameters]]
+id = "seek_s"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 86400.0 } }
+default = { f64 = 0.0 }
+hot_change = true
+unit = "s"
+label = "跳到第几秒（写入即跳；实时位置看 transport 口）"
 
 [[parameters]]
 id = "gain"
@@ -81,6 +159,22 @@ range = { f64_range = { min = 0.05, max = 4.0 } }
 default = { f64 = 1.0 }
 hot_change = true
 label = "播放速度（× 文件采样率；慢放看轨迹细节）"
+
+# 出声：系统默认输出设备。打不开只在 transport 口的 audio 列报，画面照常。
+[[parameters]]
+id = "audio"
+param_type = "bool"
+default = { bool = true }
+hot_change = true
+label = "出声（系统默认输出设备）"
+
+[[parameters]]
+id = "volume"
+param_type = "f64"
+range = { f64_range = { min = 0.0, max = 1.0 } }
+default = { f64 = 0.8 }
+hot_change = true
+label = "音量（只管声音，不动画面）"
 
 [[actions]]
 id = "restart"
