@@ -1,0 +1,85 @@
+# sigflow.ui.polar_trace — 极坐标轨迹盘：绑一个 producer 口，口的每一组（通道）在同一张盘上
+# 画一条轨迹——极角取 theta 列，半径 = 基圆 + 放大后的偏离量，参照画成一个正圆，待测轨迹
+# 围着它起伏。带余辉（0 = 只画当前点；拉到参数上限 = 无限，按角度箱存最小/最大包络）。
+# 为编码器一周均匀度测试（dexhand.test.enc_uniformity 的 trace 口）做的，但它只认列，不认插件：
+#   theta  极角（度，0 在 12 点、顺时针）；NaN 的行 = 这一行没有新样本，跳过
+#   err    偏离量（度）               w_ref / w_dut  参照与待测的转速（圈/秒）
+#   gen    余辉代数：变了就清屏（上游的「清余辉」动作 +1）
+#
+# 旋钮不在控件配置里——控件之间不能互相驱动，滑块只能写插件参数。所以倍率 / 偏置 / 余辉是
+# **绑定节点的参数**，这里的 *_param 配置只说它们叫什么名字（缺省就是 enc_uniformity 的那几个）。
+# 倍率在**画的时候**才乘（点环里存的是物理量），调倍率时已有的余辉一起跟着变。
+#   基圆 R = r_offset + r_gain × 0.5 × (radius_mode = speed 时再乘 |w_ref|)      （占盘半径）
+#   待测点 = R × (1 + diff_gain × err 弧度)                      deviation = position
+#          = r_offset + r_gain × 0.5 × (|w_ref| + diff_gain × (|w_dut| − |w_ref|))   deviation = speed
+# diff_gain = 1 是真实几何比例。纯 manifest 包。
+name = "sigflow.ui.polar_trace"
+version = "0.1.0"
+category = "ui_widget"
+
+[runtime]
+type = "native"
+library = "widget.json"
+entry = "unused"
+
+[widget]
+widget_type = "polar_trace"
+bindable_to = [{ kind = "port" }]
+
+[widget.config_schema.label]
+type = "string"
+
+# 只画这些组（逗号分隔的组序号——注意 --config 按逗号切，多组用 | 分隔）；不给 = 全部。
+[widget.config_schema.groups]
+type = "string"
+
+# 列 id（换一个口型时改这里）。
+[widget.config_schema.theta_column]
+type = "string"
+default = "theta"
+
+[widget.config_schema.err_column]
+type = "string"
+default = "err"
+
+[widget.config_schema.ref_speed_column]
+type = "string"
+default = "w_ref"
+
+[widget.config_schema.dut_speed_column]
+type = "string"
+default = "w_dut"
+
+[widget.config_schema.gen_column]
+type = "string"
+default = "gen"
+
+# 绑定节点上的参数名。
+[widget.config_schema.r_gain_param]
+type = "string"
+default = "r_gain"
+
+[widget.config_schema.diff_gain_param]
+type = "string"
+default = "diff_gain"
+
+[widget.config_schema.r_offset_param]
+type = "string"
+default = "r_offset"
+
+[widget.config_schema.persist_param]
+type = "string"
+default = "persist_s"
+
+[widget.config_schema.radius_mode_param]
+type = "string"
+default = "radius_mode"
+
+[widget.config_schema.deviation_param]
+type = "string"
+default = "deviation"
+
+# 每条通道点环的容量（有限余辉最多留这么多点；1 kHz 新样本 × 60 s = 6 万）。
+[widget.config_schema.max_points]
+type = "u32"
+default = 60000
