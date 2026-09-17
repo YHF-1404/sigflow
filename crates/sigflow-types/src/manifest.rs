@@ -467,6 +467,15 @@ pub struct Bound {
     /// 双极：界对 |v| 生效，零居中画；`min` 缺省取 `-max`。
     #[serde(default)]
     pub bipolar: bool,
+    /// 位置型：`[min, max]` 只是**量程**，不是**坏的边**。条表示值落在区间里的哪个
+    /// 位置，控件不按离界远近着色、不记会话峰值。
+    ///
+    /// 为绕圈量和「越满越好」的量而设：关节单圈角（0..4096 counts）转到 4000 不危险，
+    /// 按离界着色会让四分之一圈常黄、贴近一圈常红；有信号通道数满 16 是最好的状态，
+    /// 却会被画成贴界的红。缺省 false = 现有语义（界就是坏的边）。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub position: bool,
 }
 
 /// 界从哪来：一个常数，或同组里另一列——生效的界只有生产方知道（驱动器

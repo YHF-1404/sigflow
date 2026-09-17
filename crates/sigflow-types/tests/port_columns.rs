@@ -131,3 +131,20 @@ fn the_documented_shape_parses_and_roundtrips() {
     assert_eq!(back.columns[1].bound.as_ref().unwrap().max, col("ferr_lim"));
     assert_eq!(back.columns[3].bound.as_ref().unwrap().max, Some(BoundRef::Value(1000.0)));
 }
+
+/// 位置型界：`position = true` 说「这是量程不是坏的边」。缺省 false、序列化时
+/// 省略——老 manifest 零感知，老壳体读到新 manifest 也只是忽略这个键（Bound 不拒
+/// 未知字段），条照画、只是按旧规则着色。
+#[test]
+fn a_position_bound_is_a_range_not_an_edge() {
+    use sigflow_types::manifest::Bound;
+    let b: Bound = toml::from_str("min = 0.0\nmax = 4096.0\nposition = true").unwrap();
+    assert!(b.position && !b.bipolar);
+    assert_eq!((&b.min, &b.max), (&Some(BoundRef::Value(0.0)), &Some(BoundRef::Value(4096.0))));
+    let json = serde_json::to_value(&b).unwrap();
+    assert_eq!(json["position"], serde_json::json!(true));
+
+    let old: Bound = toml::from_str("max = 1000.0").unwrap();
+    assert!(!old.position, "不写 = 现有语义：界就是坏的边");
+    assert!(serde_json::to_value(&old).unwrap().get("position").is_none(), "false 不出现在 JSON 里");
+}

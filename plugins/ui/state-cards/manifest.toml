@@ -46,3 +46,15 @@ default = "servo_on"
 # 只画这些组（逗号分隔的组序号），缺省全部。
 [widget.config_schema.groups]
 type = "string"
+
+# 有界量画成环而不是横条：[min,max] 绕成一整圈（12 点为 min、顺时针），环心写值、
+# 环下写短名，横向排开自动换行。一卡十几路位置量（关节单圈角）时比一行一根横条
+# 省地方得多。配色规则不变（位置型界中性色）；rings 模式不画峰值刻度。
+[widget.config_schema.rings]
+type = "bool"
+default = false
+
+# 环的直径（px）。
+[widget.config_schema.ring_px]
+type = "f64"
+default = 56.0
