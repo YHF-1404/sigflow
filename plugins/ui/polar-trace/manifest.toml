@@ -12,7 +12,11 @@
 #   基圆 R = r_offset + r_gain × 0.5 × (radius_mode = speed 时再乘 |w_ref|)      （占盘半径）
 #   待测点 = R × (1 + diff_gain × err 弧度)                      deviation = position
 #          = r_offset + r_gain × 0.5 × (|w_ref| + diff_gain × (|w_dut| − |w_ref|))   deviation = speed
-# diff_gain = 1 是真实几何比例。纯 manifest 包。
+# diff_gain = 1 是真实几何比例。
+# **参数值的契约**：radius_mode ∈ {constant, speed}，deviation ∈ {position, speed}——控件按这两个
+# 字面量判（不是 speed 就当前者）。取值属于节点参数，不在这里的 config_schema 里再列一遍
+# enum_values（列了就是两处真相）；换一个上游时，请在它的 manifest 里把这两个参数声明成这样的 enum。
+# 纯 manifest 包。
 name = "sigflow.ui.polar_trace"
 version = "0.1.0"
 category = "ui_widget"
@@ -29,7 +33,9 @@ bindable_to = [{ kind = "port" }]
 [widget.config_schema.label]
 type = "string"
 
-# 只画这些组（逗号分隔的组序号——注意 --config 按逗号切，多组用 | 分隔）；不给 = 全部。
+# 只画这些组：组序号，用 | 或空格分隔（sigflow-cli 的 --config 按逗号切 k=v，逗号用不了）；
+# 不给 = 全部。单个组序号眼下要写成 `1|`：cli 把纯数字的值转成 JSON 数字，壳体对 string 键
+# 要求是字符串，`groups=1` 会被拒（state_cards 的 groups 同病；sigflow-core 修好后删掉这半句）。
 [widget.config_schema.groups]
 type = "string"
 
