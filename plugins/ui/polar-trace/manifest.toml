@@ -73,6 +73,8 @@ default = "diff_gain"
 type = "string"
 default = "r_offset"
 
+# 余辉秒数的参数。**约定：取值 ≥ 该参数 range 的 max 视为无限余辉**（画角度箱包络，不再按时间淘汰）；
+# 0 = 只画当前点。所以上游把这个参数的 range.max 定成「滑块拉到头 = 无限」的那个数。
 [widget.config_schema.persist_param]
 type = "string"
 default = "persist_s"
