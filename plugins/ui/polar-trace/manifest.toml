@@ -34,8 +34,8 @@ bindable_to = [{ kind = "port" }]
 type = "string"
 
 # 只画这些组：组序号，用 | 或空格分隔（sigflow-cli 的 --config 按逗号切 k=v，逗号用不了）；
-# 不给 = 全部。单个组序号眼下要写成 `1|`：cli 把纯数字的值转成 JSON 数字，壳体对 string 键
-# 要求是字符串，`groups=1` 会被拒（state_cards 的 groups 同病；sigflow-core 修好后删掉这半句）。
+# 不给 = 全部。单个组序号 `groups=1`：cli 会把纯数字的值发成 JSON 数字，壳体要带 sigflow-core
+# 43d3010（string 键收到数字就存成字符串）才收；更老的壳体会拒，那里写成 `1|`。
 [widget.config_schema.groups]
 type = "string"
 
