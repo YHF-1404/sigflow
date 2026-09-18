@@ -10,11 +10,13 @@ entry = "unused"
 
 [widget]
 widget_type = "number_input"
+# string 参数也能绑：渲染器画的是文本框（编码器型号、磁体型号这类报告元数据）。
 bindable_to = [
   { kind = "param", data_type = "f64" },
   { kind = "param", data_type = "f32" },
   { kind = "param", data_type = "u32" },
   { kind = "param", data_type = "i32" },
+  { kind = "param", data_type = "string" },
 ]
 
 [widget.config_schema.unit_label]
