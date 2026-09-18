@@ -81,6 +81,26 @@ fn presentation_defaults_to_face_and_param_table_asks_for_a_page() {
 }
 
 #[test]
+fn 极坐标盘是脸上的控件_绑口_旋钮名走_config() {
+    // 盘面的倍率 / 偏置 / 余辉 / 两个模式是**绑定节点的参数**（控件之间不能互相驱动，滑块只能
+    // 写参数）；控件配置里只说它们叫什么名字。六个 *_param 键缺一个，那个旋钮就换不了上游。
+    let p = ui_dir().join("polar-trace").join("manifest.toml");
+    let m: PluginManifest =
+        toml::from_str(&std::fs::read_to_string(&p).expect("read")).expect("parse");
+    let w = m.widget.expect("[widget]");
+    assert_eq!(w.widget_type, "polar_trace");
+    assert_eq!(w.presentation, Presentation::Face);
+    assert_eq!(w.bindable_to.len(), 1);
+    assert_eq!(w.bindable_to[0].kind.as_str(), "port");
+    for k in [
+        "r_gain_param", "diff_gain_param", "r_offset_param", "persist_param", "radius_mode_param",
+        "deviation_param", "theta_column", "err_column", "gen_column", "groups",
+    ] {
+        assert!(w.config_schema.contains_key(k), "缺配置键 {k}");
+    }
+}
+
+#[test]
 fn 示波器是整页控件_绑口_配置只有_label() {
     // setup 全在 bind.scope（ScopeConfig），config 里只许有 label——旋钮不是控件配置。
     let p = ui_dir().join("oscilloscope").join("manifest.toml");
