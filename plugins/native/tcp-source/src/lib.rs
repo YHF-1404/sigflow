@@ -6,7 +6,7 @@
 //! arrived and emits them as one Opaque byte frame, stamped with host arrival
 //! time. A downstream parser (e.g. `touch_tracker`) reassembles records.
 //!
-//! The byte stream is modeled as a `u8` sample stream: `n_samples` = bytes in
+//! The byte stream is modeled as an `i8` sample stream: `n_samples` = bytes in
 //! this frame, `sample_index` = cumulative byte count since connect. That keeps
 //! the self-anchored-frame contract (a transport drop would show as a
 //! `sample_index` jump) even though the data is opaque.
@@ -38,7 +38,7 @@ pub struct TcpSource {
     port: u16,
     stream: Option<TcpStream>,
     seq: u64,
-    /// Cumulative bytes since stream start — the u8 sample axis (kept monotonic
+    /// Cumulative bytes since stream start — the i8 sample axis (kept monotonic
     /// across reconnects).
     byte_index: u64,
     /// Reusable read buffer, grown to the output capacity on first use.

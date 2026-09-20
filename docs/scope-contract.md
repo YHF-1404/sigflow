@@ -12,6 +12,10 @@ sigflow `feat/scope`（从 feat/tap-scope 分出）。`tap-scope.md` 里"触发�
 - `Dtype` 枚举 `i8 | i16 | i32 | f32 | f64`（`elem_bytes`、`is_integer`、`FromStr`）；
   `SemanticType.dtype` 仍是字符串，但只能是这五个名字之一，**没写 = f32**
   （`SemanticType::dtype()`，不认识的名字是错、不猜）。
+- 不透明字节口（`net.tcp_bytes`、`touch.dst_result`、`touch.pen_assign` 这类定长报文 /
+  JSON 流）声明 `i8`：枚举里没有无符号名字，i8 是唯一 1 字节/样本的 dtype，字节轴语义
+  （`n_samples` = 字节数、`sample_index` = 累计字节）不变；按下面的连线规则，消费口也得
+  显式写 `i8`。旧 manifest 里的 `"u8"` 装包即拒。
 - `ColumnDecl.scale` / `offset`（缺省 1 / 0）：`物理量 = 码 × scale + offset`。
   `unit`/`bound` 指物理量；`decode`/`bits` 作用在**码**上。
 - 连线规则（sigflow-core 的 connect 校验）：生产口 dtype 是整数时，消费口必须显式声明
