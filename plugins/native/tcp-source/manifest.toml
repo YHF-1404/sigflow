@@ -10,12 +10,14 @@ entry = "sigflow_plugin_create"
 # Raw byte stream from a TCP server. Deliberately format-agnostic: it emits
 # whatever bytes arrive (Opaque payload), tagged with host arrival time. A
 # downstream parser reassembles application records. The byte axis is treated
-# as a u8 sample stream so sample_index is a monotonic byte counter and drops
-# (if any) surface as a sample_index jump.
+# as an i8 sample stream so sample_index is a monotonic byte counter and drops
+# (if any) surface as a sample_index jump. (i8, not u8: `Dtype` has no unsigned
+# name and i8 is the only 1-byte dtype; per the connect rule a consumer of this
+# port must declare i8 as well — see docs/scope-contract.md §1.)
 [[ports]]
 id = "bytes"
 direction = "producer"
-semantic_type = { kind = "net.tcp_bytes", dtype = "u8", clock_domain = "host_monotonic" }
+semantic_type = { kind = "net.tcp_bytes", dtype = "i8", clock_domain = "host_monotonic" }
 
 [[parameters]]
 id = "host"

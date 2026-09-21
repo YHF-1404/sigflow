@@ -18,7 +18,7 @@ entry = "sigflow_plugin_create"
 [[ports]]
 id = "bytes_in"
 direction = "consumer"
-semantic_type = { kind = "net.tcp_bytes", dtype = "u8" }
+semantic_type = { kind = "net.tcp_bytes", dtype = "i8" }
 
 # 端口 I：槽位→笔身份指派,JSON {"cid":N,"pen":0|1}（km 匹配结果回注）。
 # 互斥语义：无染色期时首条指派锚定该槽=pen、其余在场/期内新落槽=对侧;
@@ -26,7 +26,7 @@ semantic_type = { kind = "net.tcp_bytes", dtype = "u8" }
 [[ports]]
 id = "pen_id"
 direction = "consumer"
-semantic_type = { kind = "touch.pen_assign", dtype = "u8" }
+semantic_type = { kind = "touch.pen_assign", dtype = "i8" }
 
 [[ports]]
 id = "touch_event"
@@ -38,7 +38,7 @@ semantic_type = { kind = "touch.first_move_event", clock_domain = "host_monotoni
 [[ports]]
 id = "dst"
 direction = "producer"
-semantic_type = { kind = "touch.dst_result", dtype = "u8" }
+semantic_type = { kind = "touch.dst_result", dtype = "i8" }
 
 # Reassembly resync anchors. 0 = don't check that field (default). Set to the
 # device's report constants to make recovery after a dropped byte frame robust
